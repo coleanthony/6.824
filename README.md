@@ -42,6 +42,7 @@ MIT 6.824 is a graduate-level course offered by the Massachusetts Institute of T
 ## papers
 
 |             papers            |          notes          |
+| ----------------------------- | ----------------------- |
 |  MapReduce (2004)             |                         |
 |  GFS (2003)                   |                         |
 |  Fault-Tolerant VM(2010)      |                         |
