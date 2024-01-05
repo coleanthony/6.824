@@ -40,6 +40,7 @@ import (
 // snapshots) on the applyCh; at that point you can add fields to
 // ApplyMsg, but set CommandValid to false for these other uses.
 //
+
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -56,6 +57,7 @@ const (
 //definition of log entry
 //
 type logEntry struct {
+	
 }
 
 //
@@ -193,7 +195,7 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-
+	
 }
 
 //
@@ -299,6 +301,7 @@ func (rf *Raft) ticker() {
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
 //
+
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
