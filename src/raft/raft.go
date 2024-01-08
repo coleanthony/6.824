@@ -57,8 +57,9 @@ const (
 //definition of log entry
 //
 type LogEntry struct {
-	Index int
-	Term  int
+	Index   int
+	Term    int
+	Command interface{}
 }
 
 //
@@ -242,7 +243,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 //AppendEntry Handler
-func (rf *Raft) AppendEntry(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	defer rf.persist()
@@ -255,12 +256,20 @@ func (rf *Raft) AppendEntry(args *AppendEntriesArgs, reply *AppendEntriesReply) 
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
-		rf.State = Follower
+		rf.BecomeFollower()
 		rf.votedFor = -1
 	}
 
 	reply.Term = rf.currentTerm
+	rf.BecomeFollower()
+	rf.votedFor = -1
 	rf.electiontimer.Reset(rf.electionTimeout)
+
+	lastlogIndex := len(rf.log) - 1
+	if args.PrevLogIndex > rf.log[lastlogIndex].Index || args.PrevLogTerm != rf.log[lastlogIndex].Term {
+		reply.Success = false
+		return
+	}
 
 }
 
@@ -299,7 +308,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntry", args, reply)
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -318,11 +327,20 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *Appe
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := -1
 	term := -1
 	isLeader := true
 
 	// Your code here (2B).
+	if rf.State != Leader || rf.killed() {
+		isLeader = false
+		return index, term, isLeader
+	}
+	index = rf.log[len(rf.log)-1].Index + 1
+	term = rf.currentTerm
+	rf.log = append(rf.log, LogEntry{Index: index, Term: term, Command: command})
 
 	return index, term, isLeader
 }
@@ -354,6 +372,9 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) BecomeLeader() {
 	//一旦成为领导人：发送空的附加日志（AppendEntries）RPC（心跳）给其他所有的服务器；在一定的空余时间之后不停的重复发送，以防止跟随者超时
+	if rf.State == Leader {
+		return
+	}
 	rf.State = Leader
 	fmt.Printf("id[%d].state[%v].term[%d]: 转换为Leader\n", rf.me, rf.State, rf.currentTerm)
 	go rf.LeaderHeartbeat()
