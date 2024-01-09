@@ -19,8 +19,8 @@ MIT 6.824 is a graduate-level course offered by the Massachusetts Institute of T
 | Lecture #07 | Fault Tolerance: Raft (2)                    |     √     |
 | Lecture #08 | Zookeeper                                    |     √     |
 | Lecture #09 | More Replication, CRAQ                       |     √     |
-| Lecture #10 | Cloud Replicated DB, Aurora                  |           |
-| Lecture #11 | Cache Consistency: Frangipani                |           |
+| Lecture #10 | Cloud Replicated DB, Aurora                  |     √     |
+| Lecture #11 | Cache Consistency: Frangipani                |     √     |
 | Lecture #12 | Distributed Transactions                     |           |
 | Lecture #13 | Spanner                                      |           |
 | Lecture #14 | Optimistic Concurrency Control               |           |
