@@ -18,7 +18,9 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
+	"lab/src/labgob"
 	"lab/src/labrpc"
 	"math/rand"
 	"sync"
@@ -91,10 +93,9 @@ type Raft struct {
 	//something else
 	State           int           //状态
 	electionTimeout time.Duration //记录超时时间,选举的间隔时间不同 可以有效的防止选举失败
-	//heartbeatTimeout time.Duration //记录心跳时间
-	electiontimer *time.Ticker //每个节点中的计时器,判断选举是否超时,选举计时器
-	//heartbeattimer   *time.Ticker  //每个节点中的计时器，心跳机制,心跳计时器
-	applyCh chan ApplyMsg //client从applych取日志
+	electiontimer   *time.Ticker  //每个节点中的计时器,判断选举是否超时,选举计时器
+	applyCh         chan ApplyMsg //client从applych取日志
+	cond            *sync.Cond    //sync.Cond可以用于等待和通知goroutine，等待发送applyentry通知
 }
 
 // return currentTerm and whether this server
@@ -131,7 +132,13 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
-
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -154,7 +161,19 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
-
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var currentterm int
+	var votefor int
+	var log []LogEntry
+	if d.Decode(&currentterm) != nil || d.Decode(&votefor) != nil || d.Decode(&log) != nil {
+		//error
+		fmt.Println("read persist data error")
+	} else {
+		rf.currentTerm = currentterm
+		rf.votedFor = votefor
+		rf.log = log
+	}
 }
 
 // example AppendEntries RPC arguments and reply structure.
@@ -248,6 +267,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
+	//1.返回假 如果领导人的任期小于接收者的当前任期
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
@@ -256,21 +276,43 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
-		rf.BecomeFollower()
-		rf.votedFor = -1
 	}
-
-	reply.Term = rf.currentTerm
 	rf.BecomeFollower()
 	rf.votedFor = -1
+	reply.Term = rf.currentTerm
 	rf.electiontimer.Reset(rf.electionTimeout)
 
+	//2.在接收者日志中 如果能找到一个和 prevLogIndex 以及 prevLogTerm 一样的索引和任期的日志条目 则继续执行下面的步骤 否则返回假
 	lastlogIndex := len(rf.log) - 1
 	if args.PrevLogIndex > rf.log[lastlogIndex].Index || args.PrevLogTerm != rf.log[lastlogIndex].Term {
 		reply.Success = false
 		return
 	}
 
+	//3.如果一个已经存在的条目和新条目（即刚刚接收到的日志条目）发生了冲突（因为索引相同，任期不同），那么就删除这个已经存在的条目以及它之后的所有条目
+	//4.追加日志中尚未存在的任何新条目
+	index := args.PrevLogIndex
+	for i := 0; i < len(args.Entries); i++ {
+		index++
+		if index < len(rf.log) {
+			if rf.log[index].Term == args.Entries[i].Term {
+				continue
+			}
+			rf.log = rf.log[:index]
+		}
+		rf.log = append(rf.log, args.Entries[i:]...)
+		break
+	}
+
+	//5.if leadercommit>commitdex,set commitindex=min(leadercommit,index of last new entry)
+	if args.LeaderCommit > rf.commitIndex {
+		lastlogIndex := len(rf.log) - 1
+		rf.commitIndex = min(args.LeaderCommit, lastlogIndex)
+		rf.cond.Broadcast()
+	}
+
+	rf.electiontimer.Reset(rf.electionTimeout)
+	return
 }
 
 //
@@ -345,6 +387,24 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
+func (rf *Raft) ApplyEntries() {
+	//将logEntry应用到状态机
+	for {
+		rf.mu.Lock()
+		if rf.lastApplied >= rf.commitIndex {
+			rf.cond.Wait()
+		}
+		rf.lastApplied++
+		applymsg := ApplyMsg{
+			CommandValid: true,
+			Command:      rf.log[rf.lastApplied].Command,
+			CommandIndex: rf.log[rf.lastApplied].Index,
+		}
+		rf.applyCh <- applymsg
+		rf.mu.Unlock()
+	}
+}
+
 //
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
@@ -376,6 +436,11 @@ func (rf *Raft) BecomeLeader() {
 		return
 	}
 	rf.State = Leader
+
+	for i := range rf.peers {
+		rf.nextIndex[i] = rf.log[len(rf.log)-1].Index + 1
+		rf.matchIndex[i] = 0
+	}
 	fmt.Printf("id[%d].state[%v].term[%d]: 转换为Leader\n", rf.me, rf.State, rf.currentTerm)
 	go rf.LeaderHeartbeat()
 }
@@ -523,11 +588,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		State:           Follower,
 		applyCh:         applyCh,
 		electionTimeout: GetRamdomTimeout(),
-		//heartbeatTimeout: GetStableHeartbeattime(),
-		electiontimer: time.NewTicker(GetRamdomTimeout()),
-		//heartbeattimer:   time.NewTicker(GetStableHeartbeattime()),
+		electiontimer:   time.NewTicker(GetRamdomTimeout()),
 	}
 	rf.log[len(rf.log)-1].Term = 0
+	rf.log[len(rf.log)-1].Index = 0
+	rf.cond = sync.NewCond(&rf.mu)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	// start ticker goroutine to start elections
