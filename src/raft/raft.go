@@ -216,6 +216,9 @@ type RequestVoteReply struct {
 }
 
 //RequestVote RPC handler.
+// Raft 通过比较两份日志中最后一条日志条目的索引值和任期号定义谁的日志比较新。
+// 如果两份日志最后的条目的任期号不同，那么任期号大的日志更加新。
+// 如果两份日志最后的条目任期号相同，那么日志比较长的那个就更加新。
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
@@ -272,6 +275,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
+		reply.NextTryIndex = rf.lastLogIndex() + 1
 		return
 	}
 
@@ -284,36 +288,37 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.electiontimer.Reset(rf.electionTimeout)
 
 	//2.在接收者日志中 如果能找到一个和 prevLogIndex 以及 prevLogTerm 一样的索引和任期的日志条目 则继续执行下面的步骤 否则返回假
-	lastlogIndex := len(rf.log) - 1
-	if args.PrevLogIndex > rf.log[lastlogIndex].Index || args.PrevLogTerm != rf.log[lastlogIndex].Term {
+	if args.PrevLogIndex > rf.lastLogIndex() {
 		reply.Success = false
+		reply.NextTryIndex = rf.lastLogIndex() + 1
 		return
 	}
 
 	//3.如果一个已经存在的条目和新条目（即刚刚接收到的日志条目）发生了冲突（因为索引相同，任期不同），那么就删除这个已经存在的条目以及它之后的所有条目
-	//4.追加日志中尚未存在的任何新条目
-	index := args.PrevLogIndex
-	for i := 0; i < len(args.Entries); i++ {
-		index++
-		if index < len(rf.log) {
-			if rf.log[index].Term == args.Entries[i].Term {
-				continue
+	baseIndex := rf.log[0].Index
+	if args.PrevLogIndex >= baseIndex && args.PrevLogTerm != rf.lastLogTerm() {
+		term := args.Entries[args.PrevLogIndex-baseIndex].Term
+		for i := args.PrevLogIndex - 1; i >= baseIndex; i-- {
+			if rf.log[i-baseIndex].Term != term {
+				reply.NextTryIndex = i + 1
+				reply.Success = false
+				return
 			}
-			rf.log = rf.log[:index]
 		}
-		rf.log = append(rf.log, args.Entries[i:]...)
-		break
 	}
 
+	//4.追加日志中尚未存在的任何新条目
+	rf.log = rf.log[:args.PrevLogIndex+1]
+	rf.log = append(rf.log, args.Entries...)
 	//5.if leadercommit>commitdex,set commitindex=min(leadercommit,index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
-		lastlogIndex := len(rf.log) - 1
+		lastlogIndex := rf.lastLogIndex()
 		rf.commitIndex = min(args.LeaderCommit, lastlogIndex)
 		rf.cond.Broadcast()
 	}
 
 	rf.electiontimer.Reset(rf.electionTimeout)
-	reply.Term, reply.Success = rf.currentTerm, true
+	reply.Term, reply.Success, reply.NextTryIndex = rf.currentTerm, true, args.PrevLogIndex+len(args.Entries)
 	return
 }
 
@@ -357,7 +362,7 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *Appe
 	defer rf.mu.Unlock()
 
 	if !ok || reply.Term != rf.currentTerm || rf.State != Leader {
-		fmt.Println("send append entries error")
+		//fmt.Println("send append entries error")
 		return ok
 	}
 
@@ -489,7 +494,7 @@ func (rf *Raft) BecomeLeader() {
 		rf.nextIndex[i] = rf.log[len(rf.log)-1].Index + 1
 		rf.matchIndex[i] = 0
 	}
-	fmt.Printf("id[%d].state[%v].term[%d]: 转换为Leader\n", rf.me, rf.State, rf.currentTerm)
+	//fmt.Printf("id[%d].state[%v].term[%d]: 转换为Leader\n", rf.me, rf.State, rf.currentTerm)
 	go rf.LeaderHeartbeat()
 }
 
@@ -497,7 +502,7 @@ func (rf *Raft) BecomeCandidate() {
 	rf.State = Candidate
 	rf.currentTerm++
 	rf.votedFor = rf.me
-	fmt.Printf("id[%d].state[%v].term[%d]: 转换为Candidate\n", rf.me, rf.State, rf.currentTerm)
+	//fmt.Printf("id[%d].state[%v].term[%d]: 转换为Candidate\n", rf.me, rf.State, rf.currentTerm)
 }
 
 func (rf *Raft) BecomeFollower() {
@@ -505,7 +510,7 @@ func (rf *Raft) BecomeFollower() {
 		return
 	}
 	rf.State = Follower
-	fmt.Printf("id[%d].state[%v].term[%d]: 转换为Follower\n", rf.me, rf.State, rf.currentTerm)
+	//fmt.Printf("id[%d].state[%v].term[%d]: 转换为Follower\n", rf.me, rf.State, rf.currentTerm)
 }
 
 func (rf *Raft) StartElection() {
@@ -559,7 +564,7 @@ func (rf *Raft) ticker() {
 				break
 			}
 			if rf.State != Leader {
-				fmt.Printf("id[%d].state[%v].term[%d]: 选举计时器到期\n", rf.me, rf.State, rf.currentTerm)
+				//fmt.Printf("id[%d].state[%v].term[%d]: 选举计时器到期\n", rf.me, rf.State, rf.currentTerm)
 				rf.StartElection()
 			}
 			rf.electiontimer.Reset(rf.electionTimeout)
@@ -609,6 +614,10 @@ func (rf *Raft) LeaderHeartbeat() {
 
 func (rf *Raft) lastLogIndex() int {
 	return rf.log[len(rf.log)-1].Index
+}
+
+func (rf *Raft) lastLogTerm() int {
+	return rf.log[len(rf.log)-1].Term
 }
 
 func GetRamdomTimeout() time.Duration {
