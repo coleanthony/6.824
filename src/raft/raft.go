@@ -187,8 +187,9 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int  //currentTerm, for leader to update itself
-	Success bool //true if follower contained entry matchingprevLogIndex and prevLogTerm
+	Term         int  //currentTerm, for leader to update itself
+	Success      bool //true if follower contained entry matchingprevLogIndex and prevLogTerm
+	NextTryIndex int  //if appendentry fail because of the mismatch of the term, decrease the nextindex and retry
 }
 
 //
@@ -312,6 +313,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	rf.electiontimer.Reset(rf.electionTimeout)
+	reply.Term, reply.Success = rf.currentTerm, true
 	return
 }
 
@@ -351,6 +353,52 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 
 func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if !ok || reply.Term != rf.currentTerm || rf.State != Leader {
+		fmt.Println("send append entries error")
+		return ok
+	}
+
+	if reply.Term > rf.currentTerm {
+		rf.currentTerm = reply.Term
+		rf.BecomeFollower()
+		rf.votedFor = -1
+		rf.persist()
+		return ok
+	}
+
+	//>1/2 and leader apply
+	if reply.Success {
+		//如果成功：更新相应跟随者的 nextIndex 和 matchIndex
+		if len(args.Entries) > 0 {
+			rf.nextIndex[server] = args.Entries[len(args.Entries)-1].Index + 1
+			rf.matchIndex[server] = rf.nextIndex[server] - 1
+		}
+	} else {
+		//因为日志不一致而失败，则 nextIndex 递减并重试
+		rf.nextIndex[server] = reply.NextTryIndex
+	}
+
+	//假设存在 N 满足N > commitIndex，使得大多数的 matchIndex[i] ≥ N以及log[N].term == currentTerm 成立，则令 commitIndex = N
+	for N := rf.lastLogIndex(); N > rf.commitIndex && rf.log[N].Term == rf.currentTerm; N-- {
+		countvotes := 1
+		for i := range rf.peers {
+			if i == rf.me {
+				continue
+			}
+			if rf.matchIndex[i] >= N {
+				countvotes++
+			}
+		}
+		if countvotes > len(rf.peers)/2 {
+			rf.commitIndex = N
+			rf.cond.Broadcast()
+			break
+		}
+	}
+
 	return ok
 }
 
@@ -528,28 +576,39 @@ func (rf *Raft) LeaderHeartbeat() {
 			rf.mu.Unlock()
 			break
 		}
-		entries := make([]LogEntry, 0)
-		heartbeat := &LogEntry{
-			Term: rf.currentTerm,
-		}
-		entries = append(entries, *heartbeat)
-		appendentriesargs := &AppendEntriesArgs{
-			Term:         rf.currentTerm,
-			LeaderId:     rf.me,
-			PrevLogIndex: 0, //index of log entry immediately preceding new ones,need to change
-			PrevLogTerm:  0, //term of prevLogIndex entry,need to change
-			Entries:      entries,
-			LeaderCommit: rf.commitIndex,
-		}
-		rf.mu.Unlock()
+		//send empty heartbeat or logentry
 		for i := range rf.peers {
 			if i == rf.me {
 				continue
 			}
+			prevlogindex := rf.nextIndex[i] - 1
+			var prevlogterm int
+			if prevlogindex >= 0 {
+				prevlogterm = rf.log[prevlogindex].Term
+			}
+			var entries []LogEntry
+			if rf.nextIndex[i] <= rf.lastLogIndex() {
+				entries = rf.log[rf.nextIndex[i]:]
+			}
+			//if not, the entry is empty, it is a heartbeat
+			appendentriesargs := &AppendEntriesArgs{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				PrevLogIndex: prevlogindex,
+				PrevLogTerm:  prevlogterm,
+				Entries:      entries,
+				LeaderCommit: rf.commitIndex,
+			}
+
 			go rf.sendAppendEntry(i, appendentriesargs, &AppendEntriesReply{})
 		}
+		rf.mu.Unlock()
 		time.Sleep(GetStableHeartbeattime())
 	}
+}
+
+func (rf *Raft) lastLogIndex() int {
+	return rf.log[len(rf.log)-1].Index
 }
 
 func GetRamdomTimeout() time.Duration {
@@ -597,6 +656,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 	// start ticker goroutine to start elections
 	go rf.ticker()
+	go rf.ApplyEntries()
 	// fmt.Println("Start raft id:" + strconv.Itoa(me))
 	return rf
 }
