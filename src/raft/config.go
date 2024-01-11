@@ -430,6 +430,12 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // times, in case a leader fails just after Start().
 // if retry==false, calls Start() only once, in order
 // to simplify the early Lab 2B tests.
+func (cfg *config) checkstates() {
+	for i := range cfg.rafts {
+		fmt.Println(cfg.rafts[i].State)
+	}
+}
+
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	t0 := time.Now()
 	starts := 0
