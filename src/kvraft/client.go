@@ -10,6 +10,7 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+
 }
 
 func nrand() int64 {
