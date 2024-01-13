@@ -3,6 +3,7 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
+	"sync"
 
 	"lab/src/labrpc"
 )
@@ -10,7 +11,8 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-
+	mu       sync.Mutex
+	clientId int
 }
 
 func nrand() int64 {
