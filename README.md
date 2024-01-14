@@ -23,7 +23,7 @@ MIT 6.824 is a graduate-level course offered by the Massachusetts Institute of T
 | Lecture #11 | Cache Consistency: Frangipani                |     √     |
 | Lecture #12 | Distributed Transactions                     |     √     |
 | Lecture #13 | Spanner                                      |     √     |
-| Lecture #14 | Optimistic Concurrency Control               |           |
+| Lecture #14 | Optimistic Concurrency Control               |     √     |
 | Lecture #15 | Big Data: Spark                              |           |
 | Lecture #16 | Cache Consistency: Memcached at Facebook     |           |
 | Lecture #17 | Causal Consistency, COPS                     |           |

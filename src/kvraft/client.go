@@ -52,18 +52,18 @@ func (ck *Clerk) Get(key string) string {
 	ck.mu.Lock()
 	args.ClientId = ck.clientId
 	args.CommandId = ck.commandId
+	ck.commandId++
 	ck.mu.Unlock()
 	reply := &GetReply{}
 
 	for {
 		ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
 		if !ok || reply.Err == ErrNoKey || reply.Err == ErrWrongLeader {
+			ck.mu.Lock()
 			ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
+			ck.mu.Unlock()
 			continue
 		}
-		ck.mu.Lock()
-		ck.commandId++
-		ck.mu.Unlock()
 		return reply.Value
 	}
 }
@@ -87,18 +87,18 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.mu.Lock()
 	args.ClientId = ck.clientId
 	args.CommandId = ck.commandId
+	ck.commandId++
 	ck.mu.Unlock()
 	reply := &PutAppendReply{}
 
 	for {
 		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
 		if !ok || reply.Err == ErrNoKey || reply.Err == ErrWrongLeader {
+			ck.mu.Lock()
 			ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
+			ck.mu.Unlock()
 			continue
 		}
-		ck.mu.Lock()
-		ck.commandId++
-		ck.mu.Unlock()
 		return
 
 	}

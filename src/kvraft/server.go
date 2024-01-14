@@ -7,9 +7,18 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const Debug = 0
+
+const TimeoutApply = 240 * time.Millisecond
+
+const (
+	CommandPut    = "Put"
+	CommandAppend = "Append"
+	CommandGet    = "Get"
+)
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -22,6 +31,16 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Command   string // "Put" or "Append" or "Get"
+	Key       string
+	Value     string
+	CommandId int64
+	ClientId  int64
+}
+
+type Res struct {
+	Value string
+	Err   Err
 }
 
 type KVServer struct {
@@ -32,16 +51,75 @@ type KVServer struct {
 	dead    int32 // set by Kill()
 
 	maxraftstate int // snapshot if log grows this big
-
 	// Your definitions here.
+	statemachine StateMachine
+	resultCh     map[int]chan Res
+	lastopack    map[int]int
+}
+
+func (kv *KVServer) SubmitCommand(op *Op, reply *Res) {
+	//submit commands to the Raft log using Start()
+	//ApplyEntries() to rf.applych->KVSerer.applych
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		reply.Value = ""
+		return
+	}
+
+	kv.mu.Lock()
+	_, ok := kv.resultCh[index]
+	if !ok {
+		kv.resultCh[index] = make(chan Res)
+	}
+	kv.mu.Unlock()
+
+	select {
+	case result := <-kv.resultCh[index]:
+		reply.Err = result.Err
+		reply.Value = result.Value
+		return
+	case <-time.After(TimeoutApply):
+		reply.Err = ErrNoKey
+		return
+	}
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := &Op{
+		Command:   CommandGet,
+		Key:       args.Key,
+		Value:     "",
+		ClientId:  args.ClientId,
+		CommandId: args.CommandId,
+	}
+	res := &Res{}
+	kv.SubmitCommand(op, res)
+	reply.Err = res.Err
+	reply.Value = res.Value
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := &Op{
+		Command:   args.Op,
+		Key:       args.Key,
+		Value:     args.Value,
+		ClientId:  args.ClientId,
+		CommandId: args.CommandId,
+	}
+	res := &Res{}
+	kv.SubmitCommand(op, res)
+	reply.Err = res.Err
+}
+
+//apply the command sent by client
+func (kv *KVServer) Applier() {
+	// keep reading applyCh while PutAppend() and Get() handlers submit commands to the Raft log using Start()
+	for !kv.killed() {
+
+	}
 }
 
 //
@@ -58,6 +136,7 @@ func (kv *KVServer) Kill() {
 	atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
+	return
 }
 
 func (kv *KVServer) killed() bool {
@@ -83,17 +162,20 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
-
-	kv := new(KVServer)
-	kv.me = me
-	kv.maxraftstate = maxraftstate
+	labgob.Register(Res{})
 
 	// You may need initialization code here.
-
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv := &KVServer{
+		me:           me,
+		maxraftstate: maxraftstate,
+		applyCh:      make(chan raft.ApplyMsg),
+		statemachine: &KVmemory{},
+		resultCh:     make(map[int]chan Res),
+		lastopack:    make(map[int]int),
+	}
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	// You may need initialization code here.
+	go kv.Applier()
 
 	return kv
 }
