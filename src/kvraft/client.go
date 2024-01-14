@@ -9,10 +9,11 @@ import (
 )
 
 type Clerk struct {
-	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
-	mu       sync.Mutex
-	clientId int
+	servers   []*labrpc.ClientEnd
+	mu        sync.Mutex
+	clientId  int64
+	leaderId  int64
+	commandId int64
 }
 
 func nrand() int64 {
@@ -23,9 +24,12 @@ func nrand() int64 {
 }
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
-	ck := new(Clerk)
-	ck.servers = servers
-	// You'll have to add code here.
+	ck := &Clerk{
+		servers:   servers,
+		commandId: 0,
+		leaderId:  0,
+		clientId:  nrand(),
+	}
 	return ck
 }
 
@@ -42,9 +46,26 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
+	args := &GetArgs{
+		Key: key,
+	}
+	ck.mu.Lock()
+	args.ClientId = ck.clientId
+	args.CommandId = ck.commandId
+	ck.mu.Unlock()
+	reply := &GetReply{}
 
-	// You will have to modify this function.
-	return ""
+	for {
+		ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
+		if !ok || reply.Err == ErrNoKey || reply.Err == ErrWrongLeader {
+			ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
+			continue
+		}
+		ck.mu.Lock()
+		ck.commandId++
+		ck.mu.Unlock()
+		return reply.Value
+	}
 }
 
 //
@@ -58,7 +79,29 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	args := PutAppendArgs{
+		Key:   key,
+		Value: value,
+		Op:    op,
+	}
+	ck.mu.Lock()
+	args.ClientId = ck.clientId
+	args.CommandId = ck.commandId
+	ck.mu.Unlock()
+	reply := &PutAppendReply{}
+
+	for {
+		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
+		if !ok || reply.Err == ErrNoKey || reply.Err == ErrWrongLeader {
+			ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
+			continue
+		}
+		ck.mu.Lock()
+		ck.commandId++
+		ck.mu.Unlock()
+		return
+
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {
