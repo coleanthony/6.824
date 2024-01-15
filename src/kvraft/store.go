@@ -25,6 +25,6 @@ func (kv *KVmemory) Put(key string, val string) Err {
 }
 
 func (kv *KVmemory) Append(key string, val string) Err {
-	kv.store[key] += key
+	kv.store[key] += val
 	return OK
 }

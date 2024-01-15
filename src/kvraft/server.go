@@ -1,7 +1,6 @@
 package kvraft
 
 import (
-	"fmt"
 	"lab/src/labgob"
 	"lab/src/labrpc"
 	"lab/src/raft"
@@ -40,11 +39,12 @@ type Op struct {
 }
 
 type Res struct {
-	Value     string
-	Err       Err
-	ClientId  int64
-	CommandId int64
-	OK        bool
+	Value       string
+	Err         Err
+	ClientId    int64
+	CommandId   int64
+	OK          bool
+	WrongLeader bool
 }
 
 type KVServer struct {
@@ -58,7 +58,7 @@ type KVServer struct {
 	// Your definitions here.
 	statemachine StateMachine
 	resultCh     map[int]chan Res // logindex对应位置的结果
-	lastopack    map[int]int      // 记录一个 client 已经处理过的最大 requestId
+	lastopack    map[int64]int64  // 记录一个 client 已经处理过的最大 requestId
 }
 
 func (kv *KVServer) SubmitCommand(op Op) Res {
@@ -66,7 +66,7 @@ func (kv *KVServer) SubmitCommand(op Op) Res {
 	//ApplyEntries() to rf.applych->KVSerer.applych
 	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
-		return Res{Err: ErrWrongLeader}
+		return Res{OK: false}
 	}
 
 	kv.mu.Lock()
@@ -78,13 +78,13 @@ func (kv *KVServer) SubmitCommand(op Op) Res {
 
 	select {
 	case result := <-kv.resultCh[index]:
-		fmt.Printf("client[%d] command[%d] get data\n", op.ClientId, op.CommandId)
+		//fmt.Printf("client[%d] command[%d] get data\n", op.ClientId, op.CommandId)
 		if op.ClientId == result.ClientId && op.CommandId == result.CommandId {
 			return result
 		}
 		return Res{OK: false}
 	case <-time.After(TimeoutApply):
-		fmt.Printf("client[%d] command[%d] timeout\n", op.ClientId, op.CommandId)
+		//fmt.Printf("client[%d] command[%d] timeout\n", op.ClientId, op.CommandId)
 		return Res{OK: false}
 	}
 }
@@ -104,6 +104,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		reply.WrongLeader = true
 		return
 	}
+	reply.WrongLeader = false
 	reply.Err = res.Err
 	reply.Value = res.Value
 }
@@ -123,6 +124,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 	//fmt.Println("append put")
+	reply.WrongLeader = false
 	reply.Err = res.Err
 }
 
@@ -133,43 +135,47 @@ func (kv *KVServer) Applier() {
 		applymsg := <-kv.applyCh
 		kv.mu.Lock()
 		op := applymsg.Command.(Op)
-		res := &Res{
-			ClientId:  op.ClientId,
-			Err:       OK,
-			CommandId: op.CommandId,
-			OK:        true,
+		res := Res{
+			ClientId:    op.ClientId,
+			Err:         OK,
+			CommandId:   op.CommandId,
+			OK:          true,
+			WrongLeader: false,
 		}
 		if op.Command == CommandGet {
 			res.Value, res.Err = kv.statemachine.Get(op.Key)
 		} else if op.Command == CommandPut {
-			if _, ok := kv.lastopack[int(op.ClientId)]; !ok {
-				kv.lastopack[int(op.ClientId)] = int(op.CommandId)
+			if _, ok := kv.lastopack[op.ClientId]; !ok {
 				res.Err = kv.statemachine.Put(op.Key, op.Value)
 			} else {
-				if kv.lastopack[int(op.ClientId)] >= int(op.CommandId) {
+				if kv.lastopack[op.ClientId] >= op.CommandId {
 					res.Err = OK
 				} else {
 					res.Err = kv.statemachine.Put(op.Key, op.Value)
 				}
 			}
 		} else {
-			if _, ok := kv.lastopack[int(op.ClientId)]; !ok {
-				kv.lastopack[int(op.ClientId)] = int(op.CommandId)
+			if _, ok := kv.lastopack[op.ClientId]; !ok {
 				res.Err = kv.statemachine.Append(op.Key, op.Value)
 			} else {
-				if kv.lastopack[int(op.ClientId)] >= int(op.CommandId) {
+				if kv.lastopack[op.ClientId] >= op.CommandId {
 					res.Err = OK
 				} else {
 					res.Err = kv.statemachine.Append(op.Key, op.Value)
 				}
 			}
 		}
-		_, ok := kv.resultCh[applymsg.CommandIndex]
-		if !ok {
-			kv.resultCh[applymsg.CommandIndex] = make(chan Res)
-		}
+		kv.lastopack[op.ClientId] = op.CommandId
 
-		kv.resultCh[applymsg.CommandIndex] <- *res
+		if ch, ok := kv.resultCh[applymsg.CommandIndex]; ok {
+			select {
+			case <-ch: // drain bad data
+			default:
+			}
+		} else {
+			kv.resultCh[applymsg.CommandIndex] = make(chan Res, 1)
+		}
+		kv.resultCh[applymsg.CommandIndex] <- res
 
 		kv.mu.Unlock()
 	}
@@ -226,7 +232,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 			store: make(map[string]string),
 		},
 		resultCh:  make(map[int]chan Res),
-		lastopack: make(map[int]int),
+		lastopack: make(map[int64]int64),
 	}
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
