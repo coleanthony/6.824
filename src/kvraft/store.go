@@ -20,7 +20,7 @@ func (kv *KVmemory) Get(key string) (string, Err) {
 }
 
 func (kv *KVmemory) Put(key string, val string) Err {
-	kv.store[key] = key
+	kv.store[key] = val
 	return OK
 }
 

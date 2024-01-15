@@ -57,7 +57,7 @@ type KVServer struct {
 	lastopack    map[int]int
 }
 
-func (kv *KVServer) SubmitCommand(op *Op, reply *Res) {
+func (kv *KVServer) SubmitCommand(op Op, reply *Res) {
 	//submit commands to the Raft log using Start()
 	//ApplyEntries() to rf.applych->KVSerer.applych
 	index, _, isLeader := kv.rf.Start(op)
@@ -87,7 +87,7 @@ func (kv *KVServer) SubmitCommand(op *Op, reply *Res) {
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	op := &Op{
+	op := Op{
 		Command:   CommandGet,
 		Key:       args.Key,
 		Value:     "",
@@ -102,7 +102,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	op := &Op{
+	op := Op{
 		Command:   args.Op,
 		Key:       args.Key,
 		Value:     args.Value,
@@ -118,7 +118,25 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *KVServer) Applier() {
 	// keep reading applyCh while PutAppend() and Get() handlers submit commands to the Raft log using Start()
 	for !kv.killed() {
+		applymsg := <-kv.applyCh
+		kv.mu.Lock()
+		op := applymsg.Command.(Op)
+		res := &Res{}
+		if op.Command == CommandGet {
+			res.Value, res.Err = kv.statemachine.Get(op.Key)
+		} else if op.Command == CommandPut {
+			res.Err = kv.statemachine.Put(op.Key, op.Value)
+		} else {
+			res.Err = kv.statemachine.Append(op.Key, op.Value)
+		}
+		_, ok := kv.resultCh[applymsg.CommandIndex]
+		if !ok {
+			kv.resultCh[applymsg.CommandIndex] = make(chan Res)
+		}
 
+		kv.resultCh[applymsg.CommandIndex] <- *res
+
+		kv.mu.Unlock()
 	}
 }
 
@@ -169,9 +187,11 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 		me:           me,
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raft.ApplyMsg),
-		statemachine: &KVmemory{},
-		resultCh:     make(map[int]chan Res),
-		lastopack:    make(map[int]int),
+		statemachine: &KVmemory{
+			store: make(map[string]string),
+		},
+		resultCh:  make(map[int]chan Res),
+		lastopack: make(map[int]int),
 	}
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 

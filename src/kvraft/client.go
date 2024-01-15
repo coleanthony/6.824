@@ -46,7 +46,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	args := &GetArgs{
+	args := GetArgs{
 		Key: key,
 	}
 	ck.mu.Lock()
@@ -54,7 +54,7 @@ func (ck *Clerk) Get(key string) string {
 	args.CommandId = ck.commandId
 	ck.commandId++
 	ck.mu.Unlock()
-	reply := &GetReply{}
+	reply := GetReply{}
 
 	for {
 		ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
@@ -89,7 +89,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.CommandId = ck.commandId
 	ck.commandId++
 	ck.mu.Unlock()
-	reply := &PutAppendReply{}
+	reply := PutAppendReply{}
 
 	for {
 		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
