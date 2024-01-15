@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"fmt"
 	"lab/src/labgob"
 	"lab/src/labrpc"
 	"lab/src/raft"
@@ -39,8 +40,11 @@ type Op struct {
 }
 
 type Res struct {
-	Value string
-	Err   Err
+	Value     string
+	Err       Err
+	ClientId  int64
+	CommandId int64
+	OK        bool
 }
 
 type KVServer struct {
@@ -53,18 +57,16 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 	// Your definitions here.
 	statemachine StateMachine
-	resultCh     map[int]chan Res
-	lastopack    map[int]int
+	resultCh     map[int]chan Res // logindex对应位置的结果
+	lastopack    map[int]int      // 记录一个 client 已经处理过的最大 requestId
 }
 
-func (kv *KVServer) SubmitCommand(op Op, reply *Res) {
+func (kv *KVServer) SubmitCommand(op Op) Res {
 	//submit commands to the Raft log using Start()
 	//ApplyEntries() to rf.applych->KVSerer.applych
 	index, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
-		reply.Err = ErrWrongLeader
-		reply.Value = ""
-		return
+		return Res{Err: ErrWrongLeader}
 	}
 
 	kv.mu.Lock()
@@ -76,12 +78,14 @@ func (kv *KVServer) SubmitCommand(op Op, reply *Res) {
 
 	select {
 	case result := <-kv.resultCh[index]:
-		reply.Err = result.Err
-		reply.Value = result.Value
-		return
+		fmt.Printf("client[%d] command[%d] get data\n", op.ClientId, op.CommandId)
+		if op.ClientId == result.ClientId && op.CommandId == result.CommandId {
+			return result
+		}
+		return Res{OK: false}
 	case <-time.After(TimeoutApply):
-		reply.Err = ErrNoKey
-		return
+		fmt.Printf("client[%d] command[%d] timeout\n", op.ClientId, op.CommandId)
+		return Res{OK: false}
 	}
 }
 
@@ -94,8 +98,12 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		ClientId:  args.ClientId,
 		CommandId: args.CommandId,
 	}
-	res := &Res{}
-	kv.SubmitCommand(op, res)
+	res := kv.SubmitCommand(op)
+	//fmt.Println("get")
+	if res.OK == false {
+		reply.WrongLeader = true
+		return
+	}
 	reply.Err = res.Err
 	reply.Value = res.Value
 }
@@ -109,8 +117,12 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		ClientId:  args.ClientId,
 		CommandId: args.CommandId,
 	}
-	res := &Res{}
-	kv.SubmitCommand(op, res)
+	res := kv.SubmitCommand(op)
+	if res.OK == false {
+		reply.WrongLeader = true
+		return
+	}
+	//fmt.Println("append put")
 	reply.Err = res.Err
 }
 
@@ -121,13 +133,36 @@ func (kv *KVServer) Applier() {
 		applymsg := <-kv.applyCh
 		kv.mu.Lock()
 		op := applymsg.Command.(Op)
-		res := &Res{}
+		res := &Res{
+			ClientId:  op.ClientId,
+			Err:       OK,
+			CommandId: op.CommandId,
+			OK:        true,
+		}
 		if op.Command == CommandGet {
 			res.Value, res.Err = kv.statemachine.Get(op.Key)
 		} else if op.Command == CommandPut {
-			res.Err = kv.statemachine.Put(op.Key, op.Value)
+			if _, ok := kv.lastopack[int(op.ClientId)]; !ok {
+				kv.lastopack[int(op.ClientId)] = int(op.CommandId)
+				res.Err = kv.statemachine.Put(op.Key, op.Value)
+			} else {
+				if kv.lastopack[int(op.ClientId)] >= int(op.CommandId) {
+					res.Err = OK
+				} else {
+					res.Err = kv.statemachine.Put(op.Key, op.Value)
+				}
+			}
 		} else {
-			res.Err = kv.statemachine.Append(op.Key, op.Value)
+			if _, ok := kv.lastopack[int(op.ClientId)]; !ok {
+				kv.lastopack[int(op.ClientId)] = int(op.CommandId)
+				res.Err = kv.statemachine.Append(op.Key, op.Value)
+			} else {
+				if kv.lastopack[int(op.ClientId)] >= int(op.CommandId) {
+					res.Err = OK
+				} else {
+					res.Err = kv.statemachine.Append(op.Key, op.Value)
+				}
+			}
 		}
 		_, ok := kv.resultCh[applymsg.CommandIndex]
 		if !ok {

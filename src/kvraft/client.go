@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"crypto/rand"
+	"fmt"
 	"math/big"
 	"sync"
 
@@ -46,6 +47,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
+	fmt.Printf("clerk[%d] get data\n", ck.clientId)
 	args := GetArgs{
 		Key: key,
 	}
@@ -57,14 +59,14 @@ func (ck *Clerk) Get(key string) string {
 	reply := GetReply{}
 
 	for {
+		//fmt.Println("get")
 		ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
-		if !ok || reply.Err == ErrNoKey || reply.Err == ErrWrongLeader {
-			ck.mu.Lock()
-			ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
-			ck.mu.Unlock()
-			continue
+		if ok && !reply.WrongLeader {
+			return reply.Value
 		}
-		return reply.Value
+		ck.mu.Lock()
+		ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
+		ck.mu.Unlock()
 	}
 }
 
@@ -79,6 +81,7 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
+	fmt.Printf("clerk[%d] putappend data\n", ck.clientId)
 	args := PutAppendArgs{
 		Key:   key,
 		Value: value,
@@ -92,15 +95,14 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	reply := PutAppendReply{}
 
 	for {
+		//fmt.Println("putappend")
 		ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
-		if !ok || reply.Err == ErrNoKey || reply.Err == ErrWrongLeader {
-			ck.mu.Lock()
-			ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
-			ck.mu.Unlock()
-			continue
+		if ok && !reply.WrongLeader {
+			return
 		}
-		return
-
+		ck.mu.Lock()
+		ck.leaderId = (ck.leaderId + 1) % int64(len(ck.servers))
+		ck.mu.Unlock()
 	}
 }
 
