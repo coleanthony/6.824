@@ -72,7 +72,7 @@ func (kv *KVServer) SubmitCommand(op Op) Res {
 	kv.mu.Lock()
 	_, ok := kv.resultCh[index]
 	if !ok {
-		kv.resultCh[index] = make(chan Res)
+		kv.resultCh[index] = make(chan Res, 1)
 	}
 	kv.mu.Unlock()
 
@@ -131,7 +131,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 //apply the command sent by client
 func (kv *KVServer) Applier() {
 	// keep reading applyCh while PutAppend() and Get() handlers submit commands to the Raft log using Start()
-	for !kv.killed() {
+	for {
 		applymsg := <-kv.applyCh
 		kv.mu.Lock()
 		op := applymsg.Command.(Op)
@@ -143,29 +143,34 @@ func (kv *KVServer) Applier() {
 			WrongLeader: false,
 		}
 		if op.Command == CommandGet {
+			kv.lastopack[op.ClientId] = op.CommandId
 			res.Value, res.Err = kv.statemachine.Get(op.Key)
 		} else if op.Command == CommandPut {
 			if _, ok := kv.lastopack[op.ClientId]; !ok {
 				res.Err = kv.statemachine.Put(op.Key, op.Value)
+				kv.lastopack[op.ClientId] = op.CommandId
 			} else {
 				if kv.lastopack[op.ClientId] >= op.CommandId {
 					res.Err = OK
 				} else {
+					kv.lastopack[op.ClientId] = op.CommandId
 					res.Err = kv.statemachine.Put(op.Key, op.Value)
 				}
 			}
 		} else {
 			if _, ok := kv.lastopack[op.ClientId]; !ok {
+				kv.lastopack[op.ClientId] = op.CommandId
 				res.Err = kv.statemachine.Append(op.Key, op.Value)
 			} else {
 				if kv.lastopack[op.ClientId] >= op.CommandId {
 					res.Err = OK
 				} else {
+					kv.lastopack[op.ClientId] = op.CommandId
 					res.Err = kv.statemachine.Append(op.Key, op.Value)
 				}
 			}
 		}
-		kv.lastopack[op.ClientId] = op.CommandId
+		//kv.lastopack[op.ClientId] = op.CommandId
 
 		if ch, ok := kv.resultCh[applymsg.CommandIndex]; ok {
 			select {
