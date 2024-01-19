@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"lab/src/labgob"
 	"lab/src/labrpc"
 	"lab/src/raft"
@@ -134,53 +135,81 @@ func (kv *KVServer) Applier() {
 	for {
 		applymsg := <-kv.applyCh
 		kv.mu.Lock()
-		op := applymsg.Command.(Op)
-		res := Res{
-			ClientId:    op.ClientId,
-			Err:         OK,
-			CommandId:   op.CommandId,
-			OK:          true,
-			WrongLeader: false,
-		}
-		if op.Command == CommandGet {
-			kv.lastopack[op.ClientId] = op.CommandId
-			res.Value, res.Err = kv.statemachine.Get(op.Key)
-		} else if op.Command == CommandPut {
-			if _, ok := kv.lastopack[op.ClientId]; !ok {
-				res.Err = kv.statemachine.Put(op.Key, op.Value)
-				kv.lastopack[op.ClientId] = op.CommandId
-			} else {
-				if kv.lastopack[op.ClientId] >= op.CommandId {
-					res.Err = OK
-				} else {
-					kv.lastopack[op.ClientId] = op.CommandId
-					res.Err = kv.statemachine.Put(op.Key, op.Value)
-				}
-			}
+		if applymsg.UseSnapshot {
+			//fmt.Println("use snapshot")
+			r := bytes.NewBuffer(applymsg.Snapshot)
+			d := labgob.NewDecoder(r)
+			var lastIncludedIndex, lastIncludedTerm int
+			d.Decode(&lastIncludedIndex)
+			d.Decode(&lastIncludedTerm)
+			d.Decode(&kv.statemachine)
+			d.Decode(&kv.lastopack)
+
+			//if d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil || d.Decode(&kv.statemachine) != nil || d.Decode(&kv.lastopack) != nil {
+			//fmt.Println("applier decode snapshot error")
+			//	panic("applier decode snapshot error")
+			//}
 		} else {
-			if _, ok := kv.lastopack[op.ClientId]; !ok {
+			//do not use snapshot
+			op := applymsg.Command.(Op)
+			res := Res{
+				ClientId:    op.ClientId,
+				Err:         OK,
+				CommandId:   op.CommandId,
+				OK:          true,
+				WrongLeader: false,
+			}
+			if op.Command == CommandGet {
 				kv.lastopack[op.ClientId] = op.CommandId
-				res.Err = kv.statemachine.Append(op.Key, op.Value)
-			} else {
-				if kv.lastopack[op.ClientId] >= op.CommandId {
-					res.Err = OK
+				res.Value, res.Err = kv.statemachine.Get(op.Key)
+			} else if op.Command == CommandPut {
+				if _, ok := kv.lastopack[op.ClientId]; !ok {
+					res.Err = kv.statemachine.Put(op.Key, op.Value)
+					kv.lastopack[op.ClientId] = op.CommandId
 				} else {
+					if kv.lastopack[op.ClientId] >= op.CommandId {
+						res.Err = OK
+					} else {
+						kv.lastopack[op.ClientId] = op.CommandId
+						res.Err = kv.statemachine.Put(op.Key, op.Value)
+					}
+				}
+			} else {
+				if _, ok := kv.lastopack[op.ClientId]; !ok {
 					kv.lastopack[op.ClientId] = op.CommandId
 					res.Err = kv.statemachine.Append(op.Key, op.Value)
+				} else {
+					if kv.lastopack[op.ClientId] >= op.CommandId {
+						res.Err = OK
+					} else {
+						kv.lastopack[op.ClientId] = op.CommandId
+						res.Err = kv.statemachine.Append(op.Key, op.Value)
+					}
 				}
 			}
-		}
-		//kv.lastopack[op.ClientId] = op.CommandId
 
-		if ch, ok := kv.resultCh[applymsg.CommandIndex]; ok {
-			select {
-			case <-ch: // drain bad data
-			default:
+			if ch, ok := kv.resultCh[applymsg.CommandIndex]; ok {
+				select {
+				case <-ch: // drain bad data
+				default:
+				}
+			} else {
+				kv.resultCh[applymsg.CommandIndex] = make(chan Res, 1)
 			}
-		} else {
-			kv.resultCh[applymsg.CommandIndex] = make(chan Res, 1)
+			kv.resultCh[applymsg.CommandIndex] <- res
+
+			//the Raft state size is approaching maxraftsize, it should save a snapshot,
+			//and tell the Raft library that it has snapshotted, so that Raft can discard old log entries.
+			if kv.maxraftstate != -1 && kv.rf.GetStateSize() > kv.maxraftstate {
+				//fmt.Println("reach maxraftstate")
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.statemachine)
+				e.Encode(kv.lastopack)
+				snapshot := w.Bytes()
+				go kv.rf.CreateSnapshot(applymsg.CommandIndex, snapshot)
+			}
 		}
-		kv.resultCh[applymsg.CommandIndex] <- res
 
 		kv.mu.Unlock()
 	}
@@ -234,7 +263,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raft.ApplyMsg),
 		statemachine: &KVmemory{
-			store: make(map[string]string),
+			Store: make(map[string]string),
 		},
 		resultCh:  make(map[int]chan Res),
 		lastopack: make(map[int64]int64),

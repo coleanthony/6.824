@@ -47,6 +47,8 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	UseSnapshot  bool
+	Snapshot     []byte
 }
 
 //the machine state
@@ -96,10 +98,62 @@ type Raft struct {
 	electiontimer *time.Ticker  //每个节点中的计时器,判断选举是否超时,选举计时器
 	applyCh       chan ApplyMsg //client从applych取日志
 	cond          *sync.Cond    //sync.Cond可以用于等待和通知goroutine，等待发送applyentry通知
+}
 
-	//chanGrantVote chan bool
-	//chanWinElect  chan bool
-	//chanHeartbeat chan bool
+// example AppendEntries RPC arguments and reply structure.
+type AppendEntriesArgs struct {
+	Term         int        //leader's term
+	LeaderId     int        //so follower can redirect clients
+	PrevLogIndex int        //index of log entry immediately preceding new ones
+	PrevLogTerm  int        //term of prevLogIndex entry
+	Entries      []LogEntry //log entries to store (empty for heartbeat;may send more than one for efficiency)
+	LeaderCommit int        //leader’s commitIndex
+}
+
+type AppendEntriesReply struct {
+	Term         int  //currentTerm, for leader to update itself
+	Success      bool //true if follower contained entry matchingprevLogIndex and prevLogTerm
+	NextTryIndex int  //if appendentry fail because of the mismatch of the term, decrease the nextindex and retry
+}
+
+//
+// example RequestVote RPC arguments structure.
+// field names must start with capital letters!
+//
+
+type RequestVoteArgs struct {
+	// Your data here (2A, 2B).
+	Term         int //candidate’s term
+	CandidateId  int //candidate requesting vote
+	LastLogIndex int //index of candidate’s last log entry
+	LastLogTerm  int //term of candidate’s last log entry
+}
+
+//
+// example RequestVote RPC reply structure.
+// field names must start with capital letters!
+//
+type RequestVoteReply struct {
+	// Your data here (2A).
+	Term        int  //currentTerm, for candidate to update itself
+	VoteGranted bool //true means candidate received vote
+}
+
+//SnapshotRPC
+//Send the entire snapshot in a single InstallSnapshot RPC.
+//Don't implement Figure 13's offset mechanism for splitting up the snapshot.
+type InstallSnapshotArgs struct {
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	Data              []byte
+	//Offset          int
+	//Done            bool
+}
+
+type InstallSnapshotReply struct {
+	Term int
 }
 
 // return currentTerm and whether this server
@@ -147,6 +201,20 @@ func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(data)
 }
 
+func (rf *Raft) GetRfState() []byte {
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	return data
+}
+
+func (rf *Raft) GetStateSize() int {
+	return rf.persister.RaftStateSize()
+}
+
 //
 // restore previously persisted state.
 //
@@ -180,45 +248,6 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.votedFor = votefor
 		rf.log = log
 	}
-}
-
-// example AppendEntries RPC arguments and reply structure.
-type AppendEntriesArgs struct {
-	Term         int        //leader's term
-	LeaderId     int        //so follower can redirect clients
-	PrevLogIndex int        //index of log entry immediately preceding new ones
-	PrevLogTerm  int        //term of prevLogIndex entry
-	Entries      []LogEntry //log entries to store (empty for heartbeat;may send more than one for efficiency)
-	LeaderCommit int        //leader’s commitIndex
-}
-
-type AppendEntriesReply struct {
-	Term         int  //currentTerm, for leader to update itself
-	Success      bool //true if follower contained entry matchingprevLogIndex and prevLogTerm
-	NextTryIndex int  //if appendentry fail because of the mismatch of the term, decrease the nextindex and retry
-}
-
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term         int //candidate’s term
-	CandidateId  int //candidate requesting vote
-	LastLogIndex int //index of candidate’s last log entry
-	LastLogTerm  int //term of candidate’s last log entry
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-	Term        int  //currentTerm, for candidate to update itself
-	VoteGranted bool //true means candidate received vote
 }
 
 //RequestVote RPC handler.
@@ -342,7 +371,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	//4.追加日志中尚未存在的任何新条目
-	rf.log = rf.log[:args.PrevLogIndex+1]
+	rf.log = rf.log[:args.PrevLogIndex+1-baseIndex]
 	rf.log = append(rf.log, args.Entries...)
 	//5.if leadercommit>commitdex,set commitindex=min(leadercommit,index of last new entry)
 	if args.LeaderCommit > rf.commitIndex {
@@ -395,7 +424,7 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *Appe
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if !ok || reply.Term != rf.currentTerm || rf.State != Leader {
+	if !ok || args.Term != rf.currentTerm || rf.State != Leader {
 		//fmt.Println("send append entries error")
 		return ok
 	}
@@ -422,8 +451,9 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *Appe
 		rf.nextIndex[server] = reply.NextTryIndex
 	}
 
+	baseIndex := rf.log[0].Index
 	//假设存在 N 满足N > commitIndex，使得大多数的 matchIndex[i] ≥ N以及log[N].term == currentTerm 成立，则令 commitIndex = N
-	for N := rf.lastLogIndex(); N > rf.commitIndex && rf.log[N].Term == rf.currentTerm; N-- {
+	for N := rf.lastLogIndex(); N > rf.commitIndex && rf.log[N-baseIndex].Term == rf.currentTerm; N-- {
 		countvotes := 1
 		for i := range rf.peers {
 			if i == rf.me {
@@ -441,6 +471,153 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *Appe
 	}
 
 	return ok
+}
+
+func (rf *Raft) CreateSnapshot(index int, snapshot []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	//fmt.Println("create snapshot")
+
+	baseIndex, lastIndex := rf.log[0].Index, rf.lastLogIndex()
+	if baseIndex > index || lastIndex < index || index < rf.commitIndex {
+		fmt.Println("index is invalid")
+		return
+	}
+
+	//trim log
+	newlog := make([]LogEntry, 0)
+	lastIncludedIndex, lastIncludedTerm := index, rf.log[index-baseIndex].Term
+	newlog = append(newlog, LogEntry{Index: lastIncludedIndex, Term: lastIncludedTerm})
+
+	for i := len(rf.log) - 1; i >= 0; i-- {
+		if rf.log[i].Index == lastIncludedIndex && rf.log[i].Term == lastIncludedTerm {
+			newlog = append(newlog, rf.log[i+1:]...)
+			break
+		}
+	}
+	rf.log = newlog
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	//lastIncludedIndex, lastIncludedTerm
+	e.Encode(rf.log[0].Index)
+	e.Encode(rf.log[0].Term)
+	data := w.Bytes()
+	kvsnapshot := append(data, snapshot...)
+
+	rf.persister.SaveStateAndSnapshot(rf.GetRfState(), kvsnapshot)
+}
+
+func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer rf.persist()
+
+	//fmt.Printf("server[%d] install snapshot\n", rf.me)
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.BecomeFollower()
+		rf.votedFor = -1
+	}
+
+	reply.Term = rf.currentTerm
+	rf.electiontimer.Reset(GetRamdomTimeout())
+
+	if args.LastIncludedIndex > rf.commitIndex {
+		newlog := make([]LogEntry, 0)
+		lastIncludedIndex, lastIncludedTerm := args.LastIncludedIndex, args.LastIncludedTerm
+		newlog = append(newlog, LogEntry{Index: lastIncludedIndex, Term: lastIncludedTerm})
+
+		for i := len(rf.log) - 1; i >= 0; i-- {
+			if rf.log[i].Index == lastIncludedIndex && rf.log[i].Term == lastIncludedTerm {
+				newlog = append(newlog, rf.log[i+1:]...)
+				break
+			}
+		}
+		rf.log = newlog
+
+		rf.commitIndex = args.LastIncludedIndex
+		rf.currentTerm = args.LastIncludedTerm
+		rf.persister.SaveStateAndSnapshot(rf.GetRfState(), args.Data)
+
+		//使用快照重置状态机（并加载快照的集群配置）
+		applymsg := ApplyMsg{
+			CommandValid: true,
+			UseSnapshot:  true,
+			Snapshot:     args.Data,
+		}
+		rf.applyCh <- applymsg
+	}
+
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	//fmt.Printf("server[%d] send install snapshot\n", server)
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if !ok || args.Term != rf.currentTerm || rf.State != Leader {
+		//can not installsnapshot
+		return ok
+	}
+
+	if reply.Term > rf.currentTerm {
+		rf.currentTerm = reply.Term
+		rf.BecomeFollower()
+		rf.votedFor = -1
+		rf.persist()
+		return ok
+	}
+
+	rf.matchIndex[server] = args.LastIncludedIndex
+	rf.nextIndex[server] = rf.matchIndex[server] + 1
+
+	return ok
+}
+
+func (rf *Raft) recoverFromSnapShot(snapshot []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	defer rf.persist()
+
+	if snapshot == nil || len(snapshot) < 1 {
+		return
+	}
+
+	r := bytes.NewBuffer(snapshot)
+	d := labgob.NewDecoder(r)
+	var lastIncludedIndex, lastIncludedTerm int
+	if d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
+		fmt.Println("read persist snapshot error")
+	}
+
+	rf.commitIndex = lastIncludedIndex
+	rf.lastApplied = lastIncludedIndex
+	//trim log
+	newlog := make([]LogEntry, 0)
+	newlog = append(newlog, LogEntry{Index: lastIncludedIndex, Term: lastIncludedTerm})
+
+	for i := len(rf.log) - 1; i >= 0; i-- {
+		if rf.log[i].Index == lastIncludedIndex && rf.log[i].Term == lastIncludedTerm {
+			newlog = append(newlog, rf.log[i+1:]...)
+			break
+		}
+	}
+	rf.log = newlog
+
+	//使用快照重置状态机（并加载快照的集群配置）
+	applymsg := ApplyMsg{
+		CommandValid: true,
+		UseSnapshot:  true,
+		Snapshot:     snapshot,
+	}
+	rf.applyCh <- applymsg
 }
 
 //
@@ -485,10 +662,11 @@ func (rf *Raft) ApplyEntries() {
 			rf.cond.Wait()
 		}
 		rf.lastApplied++
+		baseIndex := rf.log[0].Index
 		applymsg := ApplyMsg{
 			CommandValid: true,
-			Command:      rf.log[rf.lastApplied].Command,
-			CommandIndex: rf.log[rf.lastApplied].Index,
+			Command:      rf.log[rf.lastApplied-baseIndex].Command,
+			CommandIndex: rf.lastApplied,
 		}
 		rf.applyCh <- applymsg
 		rf.mu.Unlock()
@@ -613,6 +791,7 @@ func (rf *Raft) ticker() {
 			rf.electiontimer.Reset(GetRamdomTimeout())
 			rf.mu.Unlock()
 		}
+
 	}
 	//fmt.Println("is killed")
 }
@@ -657,31 +836,49 @@ func (rf *Raft) LeaderHeartbeat() {
 			rf.mu.Unlock()
 			break
 		}
+		baseIndex := rf.log[0].Index
+		snapshot := rf.persister.ReadSnapshot()
+
 		//send empty heartbeat or logentry
 		for i := range rf.peers {
 			if i == rf.me || rf.State != Leader {
 				continue
 			}
-			prevlogindex := rf.nextIndex[i] - 1
-			var prevlogterm int
-			if prevlogindex >= 0 {
-				prevlogterm = rf.log[prevlogindex].Term
-			}
-			var entries []LogEntry
-			if rf.nextIndex[i] <= rf.lastLogIndex() {
-				entries = rf.log[rf.nextIndex[i]:]
-			}
-			//if not, the entry is empty, it is a heartbeat
-			appendentriesargs := &AppendEntriesArgs{
-				Term:         rf.currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: prevlogindex,
-				PrevLogTerm:  prevlogterm,
-				Entries:      entries,
-				LeaderCommit: rf.commitIndex,
-			}
+			if rf.nextIndex[i] > baseIndex {
+				prevlogindex := rf.nextIndex[i] - 1
+				var prevlogterm int
+				if prevlogindex >= 0 {
+					prevlogterm = rf.log[prevlogindex-baseIndex].Term
+				}
+				var entries []LogEntry
+				if rf.nextIndex[i] <= rf.lastLogIndex() {
+					entries = rf.log[rf.nextIndex[i]-baseIndex:]
+				}
+				//if not, the entry is empty, it is a heartbeat
+				appendentriesargs := &AppendEntriesArgs{
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: prevlogindex,
+					PrevLogTerm:  prevlogterm,
+					Entries:      entries,
+					LeaderCommit: rf.commitIndex,
+				}
 
-			go rf.sendAppendEntry(i, appendentriesargs, &AppendEntriesReply{})
+				go rf.sendAppendEntry(i, appendentriesargs, &AppendEntriesReply{})
+
+			} else {
+				//<= baseindex, sendsnapshot
+				installSnapshotArgs := &InstallSnapshotArgs{
+					Term:              rf.currentTerm,
+					LeaderId:          rf.me,
+					LastIncludedIndex: rf.log[0].Index,
+					LastIncludedTerm:  rf.log[0].Term,
+					Data:              snapshot,
+				}
+
+				go rf.sendInstallSnapshot(i, installSnapshotArgs, &InstallSnapshotReply{})
+
+			}
 		}
 		rf.mu.Unlock()
 		time.Sleep(GetStableHeartbeattime())
@@ -736,15 +933,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log[len(rf.log)-1].Term = 0
 	rf.log[len(rf.log)-1].Index = 0
 
-	//rf.chanGrantVote = make(chan bool, 100)
-	//rf.chanWinElect = make(chan bool, 100)
-	//rf.chanHeartbeat = make(chan bool, 100)
-
 	rf.cond = sync.NewCond(&rf.mu)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-	// start ticker goroutine to start elections
+	// initalize from snapshot
+	rf.recoverFromSnapShot(persister.ReadSnapshot())
 	rf.persist()
+	//// start ticker goroutine to start elections
 	go rf.ticker()
 	go rf.ApplyEntries()
 	// fmt.Println("Start raft id:" + strconv.Itoa(me))

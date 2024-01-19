@@ -8,11 +8,11 @@ type StateMachine interface {
 
 //最简单的内存版本的 KV 状态机
 type KVmemory struct {
-	store map[string]string
+	Store map[string]string
 }
 
 func (kv *KVmemory) Get(key string) (string, Err) {
-	res, ok := kv.store[key]
+	res, ok := kv.Store[key]
 	if ok {
 		return res, OK
 	}
@@ -20,11 +20,11 @@ func (kv *KVmemory) Get(key string) (string, Err) {
 }
 
 func (kv *KVmemory) Put(key string, val string) Err {
-	kv.store[key] = val
+	kv.Store[key] = val
 	return OK
 }
 
 func (kv *KVmemory) Append(key string, val string) Err {
-	kv.store[key] += val
+	kv.Store[key] += val
 	return OK
 }
