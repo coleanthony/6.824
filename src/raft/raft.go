@@ -330,10 +330,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 	defer rf.persist()
 
+	reply.Success = false
 	//1.返回假 如果领导人的任期小于接收者的当前任期
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
-		reply.Success = false
 		reply.NextTryIndex = rf.lastLogIndex() + 1
 		return
 	}
@@ -352,7 +352,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	//2.在接收者日志中 如果能找到一个和 prevLogIndex 以及 prevLogTerm 一样的索引和任期的日志条目 则继续执行下面的步骤 否则返回假
 	if args.PrevLogIndex > rf.lastLogIndex() {
-		reply.Success = false
 		reply.NextTryIndex = rf.lastLogIndex() + 1
 		return
 	}
@@ -364,25 +363,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		for i := args.PrevLogIndex - 1; i >= baseIndex; i-- {
 			if rf.log[i-baseIndex].Term != term {
 				reply.NextTryIndex = i + 1
-				reply.Success = false
-				return
+				break
 			}
 		}
-	}
+	} else if args.PrevLogIndex >= baseIndex-1 {
+		//4.追加日志中尚未存在的任何新条目
+		rf.log = rf.log[:args.PrevLogIndex+1-baseIndex]
+		rf.log = append(rf.log, args.Entries...)
 
-	//4.追加日志中尚未存在的任何新条目
-	rf.log = rf.log[:args.PrevLogIndex+1-baseIndex]
-	rf.log = append(rf.log, args.Entries...)
-	//5.if leadercommit>commitdex,set commitindex=min(leadercommit,index of last new entry)
-	if args.LeaderCommit > rf.commitIndex {
-		lastlogIndex := rf.lastLogIndex()
-		rf.commitIndex = min(args.LeaderCommit, lastlogIndex)
-		rf.cond.Broadcast()
-	}
+		reply.Success, reply.NextTryIndex = true, args.PrevLogIndex+len(args.Entries)
 
-	rf.electiontimer.Reset(GetRamdomTimeout())
-	reply.Term, reply.Success, reply.NextTryIndex = rf.currentTerm, true, args.PrevLogIndex+len(args.Entries)
-	return
+		if args.LeaderCommit > rf.commitIndex {
+			lastlogIndex := rf.lastLogIndex()
+			rf.commitIndex = min(args.LeaderCommit, lastlogIndex)
+			rf.cond.Broadcast()
+		}
+	}
 }
 
 //
@@ -479,7 +475,7 @@ func (rf *Raft) CreateSnapshot(index int, snapshot []byte) {
 	//fmt.Println("create snapshot")
 
 	baseIndex, lastIndex := rf.log[0].Index, rf.lastLogIndex()
-	if baseIndex > index || lastIndex < index || index < rf.commitIndex {
+	if index <= baseIndex || lastIndex < index {
 		fmt.Println("index is invalid")
 		return
 	}
@@ -542,7 +538,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.log = newlog
 
 		rf.commitIndex = args.LastIncludedIndex
-		rf.currentTerm = args.LastIncludedTerm
+		rf.lastApplied = args.LastIncludedIndex
 		rf.persister.SaveStateAndSnapshot(rf.GetRfState(), args.Data)
 
 		//使用快照重置状态机（并加载快照的集群配置）
@@ -643,7 +639,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-	if rf.State != Leader || rf.killed() {
+	if rf.State != Leader {
 		isLeader = false
 		return index, term, isLeader
 	}
@@ -659,6 +655,7 @@ func (rf *Raft) ApplyEntries() {
 	for {
 		rf.mu.Lock()
 		if rf.lastApplied >= rf.commitIndex {
+			//fmt.Println("wait")
 			rf.cond.Wait()
 		}
 		rf.lastApplied++
@@ -775,7 +772,7 @@ func (rf *Raft) StartElection() {
 
 //start a ticker to start election
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for {
 		select {
 		case <-rf.electiontimer.C:
 			//一段时间（election timeout）没收到其他节点的消息时，通过RequestVote RPC发起选举
@@ -847,7 +844,7 @@ func (rf *Raft) LeaderHeartbeat() {
 			if rf.nextIndex[i] > baseIndex {
 				prevlogindex := rf.nextIndex[i] - 1
 				var prevlogterm int
-				if prevlogindex >= 0 {
+				if prevlogindex >= baseIndex {
 					prevlogterm = rf.log[prevlogindex-baseIndex].Term
 				}
 				var entries []LogEntry

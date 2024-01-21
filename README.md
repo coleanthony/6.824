@@ -25,9 +25,9 @@ MIT 6.824 is a graduate-level course offered by the Massachusetts Institute of T
 | Lecture #13 | Spanner                                      |     √     |
 | Lecture #14 | Optimistic Concurrency Control               |     √     |
 | Lecture #15 | Big Data: Spark                              |     √     |
-| Lecture #16 | Cache Consistency: Memcached at Facebook     |           |
-| Lecture #17 | Causal Consistency, COPS                     |           |
-| Lecture #18 | Fork Consistency, Certificate Transparency   |           |
+| Lecture #16 | Cache Consistency: Memcached at Facebook     |     √     |
+| Lecture #17 | Causal Consistency, COPS                     |     √     |
+| Lecture #18 | Fork Consistency, Certificate Transparency   |     √     |
 | Lecture #19 | Peer-to-peer: Bitcoin                        |           |
 | Lecture #20 | Blockstack                                   |           |
 

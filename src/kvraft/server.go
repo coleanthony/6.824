@@ -162,28 +162,42 @@ func (kv *KVServer) Applier() {
 			if op.Command == CommandGet {
 				kv.lastopack[op.ClientId] = op.CommandId
 				res.Value, res.Err = kv.statemachine.Get(op.Key)
+				//val, ok := kv.statemachine[op.Key]
+				//if ok {
+				//	res.Value, res.Err = val, OK
+				//} else {
+				//	res.Value, res.Err = "", ErrNoKey
+				//}
 			} else if op.Command == CommandPut {
 				if _, ok := kv.lastopack[op.ClientId]; !ok {
 					res.Err = kv.statemachine.Put(op.Key, op.Value)
-					kv.lastopack[op.ClientId] = op.CommandId
+					//kv.statemachine[op.Key] = op.Value
+					//res.Err = OK
+					//kv.lastopack[op.ClientId] = op.CommandId
 				} else {
 					if kv.lastopack[op.ClientId] >= op.CommandId {
 						res.Err = OK
 					} else {
 						kv.lastopack[op.ClientId] = op.CommandId
 						res.Err = kv.statemachine.Put(op.Key, op.Value)
+						//kv.statemachine[op.Key] = op.Value
+						//res.Err = OK
 					}
 				}
 			} else {
 				if _, ok := kv.lastopack[op.ClientId]; !ok {
 					kv.lastopack[op.ClientId] = op.CommandId
 					res.Err = kv.statemachine.Append(op.Key, op.Value)
+					//kv.statemachine[op.Key] += op.Value
+					//res.Err = OK
 				} else {
 					if kv.lastopack[op.ClientId] >= op.CommandId {
 						res.Err = OK
 					} else {
 						kv.lastopack[op.ClientId] = op.CommandId
 						res.Err = kv.statemachine.Append(op.Key, op.Value)
+						//kv.statemachine[op.Key] += op.Value
+						//res.Err = OK
 					}
 				}
 			}
