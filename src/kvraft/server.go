@@ -57,7 +57,7 @@ type KVServer struct {
 
 	maxraftstate int // snapshot if log grows this big
 	// Your definitions here.
-	statemachine StateMachine
+	statemachine KVmemory
 	resultCh     map[int]chan Res // logindex对应位置的结果
 	lastopack    map[int64]int64  // 记录一个 client 已经处理过的最大 requestId
 }
@@ -129,6 +129,14 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	reply.Err = res.Err
 }
 
+func (kv *KVServer) isDuplicated(op Op) bool {
+	lastRequestId, ok := kv.lastopack[op.ClientId]
+	if ok {
+		return lastRequestId >= op.CommandId
+	}
+	return false
+}
+
 //apply the command sent by client
 func (kv *KVServer) Applier() {
 	// keep reading applyCh while PutAppend() and Get() handlers submit commands to the Raft log using Start()
@@ -140,15 +148,15 @@ func (kv *KVServer) Applier() {
 			r := bytes.NewBuffer(applymsg.Snapshot)
 			d := labgob.NewDecoder(r)
 			var lastIncludedIndex, lastIncludedTerm int
-			d.Decode(&lastIncludedIndex)
-			d.Decode(&lastIncludedTerm)
-			d.Decode(&kv.statemachine)
-			d.Decode(&kv.lastopack)
+			//d.Decode(&lastIncludedIndex)
+			//d.Decode(&lastIncludedTerm)
+			//d.Decode(&kv.statemachine)
+			//d.Decode(&kv.lastopack)
 
-			//if d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil || d.Decode(&kv.statemachine) != nil || d.Decode(&kv.lastopack) != nil {
-			//fmt.Println("applier decode snapshot error")
-			//	panic("applier decode snapshot error")
-			//}
+			if d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil || d.Decode(&kv.statemachine) != nil || d.Decode(&kv.lastopack) != nil {
+				//fmt.Println("applier decode snapshot error")
+				panic("applier decode snapshot error")
+			}
 		} else {
 			//do not use snapshot
 			op := applymsg.Command.(Op)
@@ -169,11 +177,16 @@ func (kv *KVServer) Applier() {
 				//	res.Value, res.Err = "", ErrNoKey
 				//}
 			} else if op.Command == CommandPut {
+				//if !kv.isDuplicated(op) {
+				//	kv.statemachine[op.Key] = op.Value
+				//}
+				//res.Err = OK
+
 				if _, ok := kv.lastopack[op.ClientId]; !ok {
 					res.Err = kv.statemachine.Put(op.Key, op.Value)
 					//kv.statemachine[op.Key] = op.Value
 					//res.Err = OK
-					//kv.lastopack[op.ClientId] = op.CommandId
+					kv.lastopack[op.ClientId] = op.CommandId
 				} else {
 					if kv.lastopack[op.ClientId] >= op.CommandId {
 						res.Err = OK
@@ -185,6 +198,11 @@ func (kv *KVServer) Applier() {
 					}
 				}
 			} else {
+				//if !kv.isDuplicated(op) {
+				//	kv.statemachine[op.Key] += op.Value
+				//}
+				//res.Err = OK
+
 				if _, ok := kv.lastopack[op.ClientId]; !ok {
 					kv.lastopack[op.ClientId] = op.CommandId
 					res.Err = kv.statemachine.Append(op.Key, op.Value)
@@ -201,6 +219,7 @@ func (kv *KVServer) Applier() {
 					}
 				}
 			}
+			//kv.lastopack[op.ClientId] = op.CommandId
 
 			if ch, ok := kv.resultCh[applymsg.CommandIndex]; ok {
 				select {
@@ -214,7 +233,7 @@ func (kv *KVServer) Applier() {
 
 			//the Raft state size is approaching maxraftsize, it should save a snapshot,
 			//and tell the Raft library that it has snapshotted, so that Raft can discard old log entries.
-			if kv.maxraftstate != -1 && kv.rf.GetStateSize() > kv.maxraftstate {
+			if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() > kv.maxraftstate {
 				//fmt.Println("reach maxraftstate")
 				w := new(bytes.Buffer)
 				e := labgob.NewEncoder(w)
@@ -240,7 +259,7 @@ func (kv *KVServer) Applier() {
 // to suppress debug output from a Kill()ed instance.
 //
 func (kv *KVServer) Kill() {
-	atomic.StoreInt32(&kv.dead, 1)
+	//atomic.StoreInt32(&kv.dead, 1)
 	kv.rf.Kill()
 	// Your code here, if desired.
 	return
@@ -274,9 +293,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// You may need initialization code here.
 	kv := &KVServer{
 		me:           me,
+		dead:         0,
 		maxraftstate: maxraftstate,
-		applyCh:      make(chan raft.ApplyMsg),
-		statemachine: &KVmemory{
+		applyCh:      make(chan raft.ApplyMsg, 100),
+		statemachine: KVmemory{
 			Store: make(map[string]string),
 		},
 		resultCh:  make(map[int]chan Res),

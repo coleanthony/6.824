@@ -1,10 +1,10 @@
 package kvraft
 
-type StateMachine interface {
-	Get(key string) (string, Err)
-	Put(key string, val string) Err
-	Append(key string, val string) Err
-}
+//type StateMachine interface {
+//	Get(key string) (string, Err)
+//	Put(key string, val string) Err
+//	Append(key string, val string) Err
+//}
 
 //最简单的内存版本的 KV 状态机
 type KVmemory struct {

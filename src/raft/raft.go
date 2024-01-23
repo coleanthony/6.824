@@ -211,7 +211,7 @@ func (rf *Raft) GetRfState() []byte {
 	return data
 }
 
-func (rf *Raft) GetStateSize() int {
+func (rf *Raft) GetRaftStateSize() int {
 	return rf.persister.RaftStateSize()
 }
 
@@ -377,6 +377,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			lastlogIndex := rf.lastLogIndex()
 			rf.commitIndex = min(args.LeaderCommit, lastlogIndex)
 			rf.cond.Broadcast()
+			//go rf.ApplyEntries()
 		}
 	}
 }
@@ -444,7 +445,7 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *Appe
 		}
 	} else {
 		//因为日志不一致而失败，则 nextIndex 递减并重试
-		rf.nextIndex[server] = reply.NextTryIndex
+		rf.nextIndex[server] = min(reply.NextTryIndex, rf.lastLogIndex())
 	}
 
 	baseIndex := rf.log[0].Index
@@ -462,6 +463,7 @@ func (rf *Raft) sendAppendEntry(server int, args *AppendEntriesArgs, reply *Appe
 		if countvotes > len(rf.peers)/2 {
 			rf.commitIndex = N
 			rf.cond.Broadcast()
+			//go rf.ApplyEntries()
 			break
 		}
 	}
@@ -476,7 +478,7 @@ func (rf *Raft) CreateSnapshot(index int, snapshot []byte) {
 
 	baseIndex, lastIndex := rf.log[0].Index, rf.lastLogIndex()
 	if index <= baseIndex || lastIndex < index {
-		fmt.Println("index is invalid")
+		//fmt.Println("index is invalid")
 		return
 	}
 
@@ -507,7 +509,6 @@ func (rf *Raft) CreateSnapshot(index int, snapshot []byte) {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.persist()
 
 	//fmt.Printf("server[%d] install snapshot\n", rf.me)
 	if args.Term < rf.currentTerm {
@@ -519,6 +520,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		rf.currentTerm = args.Term
 		rf.BecomeFollower()
 		rf.votedFor = -1
+		rf.persist()
 	}
 
 	reply.Term = rf.currentTerm
@@ -578,10 +580,6 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply
 }
 
 func (rf *Raft) recoverFromSnapShot(snapshot []byte) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	defer rf.persist()
-
 	if snapshot == nil || len(snapshot) < 1 {
 		return
 	}
@@ -650,11 +648,26 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
+//func (rf *Raft) ApplyEntries() {
+//	rf.mu.Lock()
+//	defer rf.mu.Unlock()
+//	baseIndex := rf.log[0].Index
+//	for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+//		applymsg := ApplyMsg{
+//			CommandValid: true,
+//			Command:      rf.log[i-baseIndex].Command,
+//			CommandIndex: i,
+//		}
+//		rf.applyCh <- applymsg
+//	}
+//	rf.lastApplied = rf.commitIndex
+//}
+
 func (rf *Raft) ApplyEntries() {
 	//将logEntry应用到状态机
 	for {
 		rf.mu.Lock()
-		if rf.lastApplied >= rf.commitIndex {
+		for rf.lastApplied >= rf.commitIndex {
 			//fmt.Println("wait")
 			rf.cond.Wait()
 		}
@@ -913,6 +926,7 @@ func GetStableHeartbeattime() time.Duration {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{
+		dead:          0,
 		peers:         peers,
 		persister:     persister,
 		me:            me,
@@ -930,11 +944,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log[len(rf.log)-1].Term = 0
 	rf.log[len(rf.log)-1].Index = 0
 
-	rf.cond = sync.NewCond(&rf.mu)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	// initalize from snapshot
 	rf.recoverFromSnapShot(persister.ReadSnapshot())
+	rf.cond = sync.NewCond(&rf.mu)
 	rf.persist()
 	//// start ticker goroutine to start elections
 	go rf.ticker()

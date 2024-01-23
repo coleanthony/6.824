@@ -45,6 +45,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // must match the declared types of the RPC handler function's
 // arguments. and reply must be passed as a pointer.
 //
+
 func (ck *Clerk) Get(key string) string {
 	//fmt.Printf("clerk[%d] get data\n", ck.clientId)
 	args := GetArgs{
