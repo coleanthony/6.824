@@ -6,6 +6,8 @@ http://nil.csail.mit.edu/6.824/2020/schedule.html
 
 MIT 6.824 is a graduate-level course offered by the Massachusetts Institute of Technology (MIT) focusing on distributed systems. The course provides an in-depth exploration of the design, implementation, and evaluation of distributed systems.
 
+In this repository, I realized a Raft-based KV store. I realized a Paxos-based KV store in another repository ([6.824-2015](https://github.com/coleanthony/6.824-2015)).
+
 ## lectures
 
 | Schedule    |                    Content                   | Condition |
@@ -58,3 +60,6 @@ MIT 6.824 is a graduate-level course offered by the Massachusetts Institute of T
 |  Bitcoin (2008)               |                         |
 |  BlockStack (2017)            |                         |
 |  AnalogicFS experience paper  |                         |
+
+## Course Notes
+
