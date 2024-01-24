@@ -16,10 +16,15 @@ type ShardMaster struct {
 	// Your data here.
 
 	configs []Config // indexed by config num
+
 }
 
 type Op struct {
-	// Your data here.
+	Command   string // "Put" or "Append" or "Get"
+	Key       string
+	Value     string
+	CommandId int64
+	ClientId  int64
 }
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
