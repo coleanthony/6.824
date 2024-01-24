@@ -1,6 +1,6 @@
 # MIT6.824 Distributed Systems
 
-mit6.824 Spring 2020. Implemented with Go 1.13.
+mit6.824 Spring 2020. Implemented with Go 1.18.
 
 http://nil.csail.mit.edu/6.824/2020/schedule.html
 
