@@ -33,9 +33,9 @@ MIT 6.824 is a graduate-level course offered by the Massachusetts Institute of T
 
 ## labs
 
-- √ Lab 1: MapReduce
-- √ Lab 2: replication for fault-tolerance using Raft
-- √ Lab 3: fault-tolerant key/value store
+- √ Lab 1: [MapReduce](records/[mit%206.824]%20lab1：MapReduce.docx)
+- √ Lab 2: [replication for fault-tolerance using Raft](records/[mit%206.824]%20lab2：Raft.docx)
+- √ Lab 3: [fault-tolerant key/value store](records/[mit%206.824]%20lab3：KVRaft.docx)
 - Lab 4: sharded key/value store
 
 
