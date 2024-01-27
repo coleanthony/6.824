@@ -23,9 +23,9 @@ const NShards = 10
 // A configuration -- an assignment of shards to groups.
 // Please don't change this.
 type Config struct {
-	Num    int              // config number
-	Shards [NShards]int     // shard -> gid
-	Groups map[int][]string // gid -> servers[]
+	Num    int              // config number, Num=0表示configuration无效，边界条件
+	Shards [NShards]int     // shard -> gid，分片位置信息，Shards[3]=2，说明分片序号为3的分片负责的集群是Group2（gid=2）
+	Groups map[int][]string // gid -> servers[]，,集群成员信息，Group[3]=['server1','server2'],说明gid = 3的集群Group3包含两台名称为server1 & server2的机器
 }
 
 const (
@@ -35,7 +35,9 @@ const (
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+	Servers   map[int][]string // new GID -> servers mappings
+	ClientId  int64
+	CommandId int64
 }
 
 type JoinReply struct {
@@ -44,7 +46,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs []int
+	GIDs      []int
+	ClientId  int64
+	CommandId int64
 }
 
 type LeaveReply struct {
@@ -53,8 +57,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+	Shard     int
+	GID       int
+	ClientId  int64
+	CommandId int64
 }
 
 type MoveReply struct {
@@ -63,7 +69,9 @@ type MoveReply struct {
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+	Num       int // desired config number
+	ClientId  int64
+	CommandId int64
 }
 
 type QueryReply struct {

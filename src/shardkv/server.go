@@ -8,6 +8,9 @@ import (
 	"sync"
 )
 
+//实现ShardKVServer服务，ShardKVServer则需要实现所有分片的读写任务，
+//相比于基础的读写服务，还需要功能和难点为配置更新，分片数据迁移，分片数据清理，空日志检测
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,

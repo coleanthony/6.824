@@ -16,7 +16,6 @@ type Clerk struct {
 	servers   []*labrpc.ClientEnd
 	mu        *sync.Mutex
 	clientId  int64
-	leaderId  int
 	commandId int64
 }
 
@@ -31,19 +30,22 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := &Clerk{
 		servers:   servers,
 		clientId:  nrand(),
-		leaderId:  0,
 		commandId: 0,
 	}
 	return ck
 }
 
+//Query： 查询最新的Config信息
 func (ck *Clerk) Query(num int) Config {
-	ck.mu.Lock()
-	defer ck.mu.Unlock()
-
 	args := &QueryArgs{
 		Num: num,
 	}
+
+	ck.mu.Lock()
+	args.ClientId = ck.clientId
+	args.CommandId = ck.commandId
+	ck.commandId++
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
@@ -58,13 +60,17 @@ func (ck *Clerk) Query(num int) Config {
 	}
 }
 
+//Join： 新加入的Group信息，要求在每一个group平衡分布shard，
 func (ck *Clerk) Join(servers map[int][]string) {
-	ck.mu.Lock()
-	defer ck.mu.Unlock()
 
 	args := &JoinArgs{}
-	// Your code here.
 	args.Servers = servers
+
+	ck.mu.Lock()
+	args.ClientId = ck.clientId
+	args.CommandId = ck.commandId
+	ck.commandId++
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
@@ -79,13 +85,16 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	}
 }
 
+//Leave： 移除Group，同样别忘记实现均衡，将移除的Group的shard每一次分配给数目最小的Group就行，如果全部删除，别忘记将shard置为无效的0。
 func (ck *Clerk) Leave(gids []int) {
-	ck.mu.Lock()
-	defer ck.mu.Unlock()
-
 	args := &LeaveArgs{}
-	// Your code here.
 	args.GIDs = gids
+
+	ck.mu.Lock()
+	args.ClientId = ck.clientId
+	args.CommandId = ck.commandId
+	ck.commandId++
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
@@ -100,14 +109,17 @@ func (ck *Clerk) Leave(gids []int) {
 	}
 }
 
+//Move 将数据库子集Shard分配给GID的Group。
 func (ck *Clerk) Move(shard int, gid int) {
-	ck.mu.Lock()
-	defer ck.mu.Unlock()
-
 	args := &MoveArgs{}
-	// Your code here.
 	args.Shard = shard
 	args.GID = gid
+
+	ck.mu.Lock()
+	args.ClientId = ck.clientId
+	args.CommandId = ck.commandId
+	ck.commandId++
+	ck.mu.Unlock()
 
 	for {
 		// try each known server.
