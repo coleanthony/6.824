@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"../mr"
+	"lab/src/mr"
 )
 
 func maybeCrash() {

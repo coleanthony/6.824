@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"lab/src/shardmaster"
 	"math/big"
+	"sync"
 	"time"
 
 	"lab/src/labrpc"
@@ -43,6 +44,10 @@ type Clerk struct {
 	config   shardmaster.Config
 	make_end func(string) *labrpc.ClientEnd
 	// You will have to modify this struct.
+	mu        sync.Mutex
+	clientId  int64
+	leaderId  int
+	commandId int64
 }
 
 //

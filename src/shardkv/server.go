@@ -6,15 +6,38 @@ import (
 	"lab/src/labrpc"
 	"lab/src/raft"
 	"sync"
+	"time"
 )
 
 //实现ShardKVServer服务，ShardKVServer则需要实现所有分片的读写任务，
 //相比于基础的读写服务，还需要功能和难点为配置更新，分片数据迁移，分片数据清理，空日志检测
 
+const TimeoutApply = 240 * time.Millisecond
+
+const (
+	CommandPut    = "Put"
+	CommandAppend = "Append"
+	CommandGet    = "Get"
+)
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Command   string // "Put" or "Append" or "Get"
+	Key       string
+	Value     string
+	CommandId int64
+	ClientId  int64
+}
+
+type Res struct {
+	Value       string
+	Err         Err
+	ClientId    int64
+	CommandId   int64
+	OK          bool
+	WrongLeader bool
 }
 
 type ShardKV struct {
@@ -27,7 +50,9 @@ type ShardKV struct {
 	masters      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
 
-	// Your definitions here.
+	statemachine KVmemory
+	resultCh     map[int]chan Res // logindex对应位置的结果
+	lastopack    map[int64]int64  // 记录一个 client 已经处理过的最大 requestId
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
