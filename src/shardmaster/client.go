@@ -14,7 +14,7 @@ import (
 
 type Clerk struct {
 	servers   []*labrpc.ClientEnd
-	mu        *sync.Mutex
+	mu        sync.Mutex
 	clientId  int64
 	commandId int64
 }
@@ -62,7 +62,6 @@ func (ck *Clerk) Query(num int) Config {
 
 //Join： 新加入的Group信息，要求在每一个group平衡分布shard，
 func (ck *Clerk) Join(servers map[int][]string) {
-
 	args := &JoinArgs{}
 	args.Servers = servers
 
