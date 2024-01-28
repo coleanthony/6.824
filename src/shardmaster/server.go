@@ -208,7 +208,7 @@ func (sm *ShardMaster) LeaveExec(op Op) Err {
 	newconf := sm.MakeNextConfig()
 	//find the remaining group
 	staygid := 0
-	for kgid, _ := range newconf.Groups {
+	for kgid := range newconf.Groups {
 		canstay := true
 		for _, gid := range op.GIDs {
 			if gid == kgid {
@@ -259,7 +259,7 @@ func (sm *ShardMaster) ReBalanceGroupShards(conf *Config) {
 	//fmt.Println("Do rebalance...")
 	serverconf := make(map[int]int)
 	serverconfmap := make(map[int][]int)
-	for k, _ := range conf.Groups {
+	for k := range conf.Groups {
 		serverconf[k] = 0
 	}
 	for i := 0; i < len(conf.Shards); i++ {
