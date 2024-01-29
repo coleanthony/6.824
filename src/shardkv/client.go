@@ -46,7 +46,6 @@ type Clerk struct {
 	// You will have to modify this struct.
 	mu        sync.Mutex
 	clientId  int64
-	leaderId  int
 	commandId int64
 }
 
@@ -64,6 +63,8 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 	ck.sm = shardmaster.MakeClerk(masters)
 	ck.make_end = make_end
 	// You'll have to add code here.
+	ck.clientId = nrand()
+	ck.commandId = 0
 	return ck
 }
 
@@ -76,6 +77,12 @@ func MakeClerk(masters []*labrpc.ClientEnd, make_end func(string) *labrpc.Client
 func (ck *Clerk) Get(key string) string {
 	args := GetArgs{}
 	args.Key = key
+
+	ck.mu.Lock()
+	args.ClientId = ck.clientId
+	args.CommandId = ck.commandId
+	ck.commandId++
+	ck.mu.Unlock()
 
 	for {
 		shard := key2shard(key)
@@ -112,6 +119,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	args.Key = key
 	args.Value = value
 	args.Op = op
+
+	ck.mu.Lock()
+	args.ClientId = ck.clientId
+	args.CommandId = ck.commandId
+	ck.commandId++
+	ck.mu.Unlock()
 
 	for {
 		shard := key2shard(key)

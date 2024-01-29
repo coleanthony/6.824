@@ -1,10 +1,11 @@
 package shardkv
 
-// import "../shardmaster"
 import (
+	"bytes"
 	"lab/src/labgob"
 	"lab/src/labrpc"
 	"lab/src/raft"
+	"lab/src/shardmaster"
 	"sync"
 	"time"
 )
@@ -13,20 +14,26 @@ import (
 //相比于基础的读写服务，还需要功能和难点为配置更新，分片数据迁移，分片数据清理，空日志检测
 
 const TimeoutApply = 240 * time.Millisecond
+const TimeoutConfigUpdate = 100 * time.Millisecond
 
 const (
-	CommandPut    = "Put"
-	CommandAppend = "Append"
-	CommandGet    = "Get"
+	CommandPut          = "Put"
+	CommandAppend       = "Append"
+	CommandGet          = "Get"
+	CommandUpdateConfig = "UpdateConfig"
+	CommandGC           = "GC"
 )
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Command   string // "Put" or "Append" or "Get"
-	Key       string
-	Value     string
+	Command string
+	//get put append
+	Key   string
+	Value string
+	//update config
+
 	CommandId int64
 	ClientId  int64
 }
@@ -50,17 +57,194 @@ type ShardKV struct {
 	masters      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
 
-	statemachine KVmemory
-	resultCh     map[int]chan Res // logindex对应位置的结果
-	lastopack    map[int64]int64  // 记录一个 client 已经处理过的最大 requestId
+	statemachine [shardmaster.NShards]KVmemory //存储
+	resultCh     map[int]chan Res              // logindex对应位置的结果
+	lastopack    map[int64]int64               // 记录一个 client 已经处理过的最大 requestId
+	config       shardmaster.Config            //配置
+	mck          *shardmaster.Clerk
+}
+
+func (kv *ShardKV) SubmitCommand(op Op) Res {
+	//submit commands to the Raft log using Start()
+	//ApplyEntries() to rf.applych->KVSerer.applych
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		return Res{OK: false}
+	}
+
+	kv.mu.Lock()
+	_, ok := kv.resultCh[index]
+	if !ok {
+		kv.resultCh[index] = make(chan Res, 1)
+	}
+	kv.mu.Unlock()
+
+	select {
+	case result := <-kv.resultCh[index]:
+		//fmt.Printf("client[%d] command[%d] get data\n", op.ClientId, op.CommandId)
+		if op.ClientId == result.ClientId && op.CommandId == result.CommandId {
+			return result
+		}
+		return Res{OK: false}
+	case <-time.After(TimeoutApply):
+		//fmt.Printf("client[%d] command[%d] timeout\n", op.ClientId, op.CommandId)
+		return Res{OK: false}
+	}
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := Op{
+		Command:   CommandGet,
+		Key:       args.Key,
+		ClientId:  args.ClientId,
+		CommandId: args.CommandId,
+	}
+	res := kv.SubmitCommand(op)
+	//fmt.Println("get")
+	if res.OK == false {
+		reply.WrongLeader = true
+		return
+	}
+	reply.WrongLeader = false
+	reply.Err = res.Err
+	reply.Value = res.Value
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{
+		Command:   args.Op,
+		Key:       args.Key,
+		Value:     args.Value,
+		ClientId:  args.ClientId,
+		CommandId: args.CommandId,
+	}
+	res := kv.SubmitCommand(op)
+	if res.OK == false {
+		reply.WrongLeader = true
+		return
+	}
+	//fmt.Println("append put")
+	reply.WrongLeader = false
+	reply.Err = res.Err
+}
+
+func (kv *ShardKV) ApplyGet(op Op, res *Res) {
+	//which shard it belongs to?
+
+	kv.lastopack[op.ClientId] = op.CommandId
+	res.Value, res.Err = kv.statemachine.Get(op.Key)
+}
+
+func (kv *ShardKV) ApplyPut(op Op, res *Res) {
+	if _, ok := kv.lastopack[op.ClientId]; !ok {
+		res.Err = kv.statemachine.Put(op.Key, op.Value)
+		kv.lastopack[op.ClientId] = op.CommandId
+	} else {
+		if kv.lastopack[op.ClientId] >= op.CommandId {
+			res.Err = OK
+		} else {
+			kv.lastopack[op.ClientId] = op.CommandId
+			res.Err = kv.statemachine.Put(op.Key, op.Value)
+		}
+	}
+}
+
+func (kv *ShardKV) ApplyAppend(op Op, res *Res) {
+	if _, ok := kv.lastopack[op.ClientId]; !ok {
+		kv.lastopack[op.ClientId] = op.CommandId
+		res.Err = kv.statemachine.Append(op.Key, op.Value)
+	} else {
+		if kv.lastopack[op.ClientId] >= op.CommandId {
+			res.Err = OK
+		} else {
+			kv.lastopack[op.ClientId] = op.CommandId
+			res.Err = kv.statemachine.Append(op.Key, op.Value)
+		}
+	}
+}
+
+func (kv *ShardKV) ApplyUpdateConfig(op Op, res *Res) {
+
+}
+
+func (kv *ShardKV) ApplyGC(op Op, res *Res) {
+
+}
+
+func (kv *ShardKV) Applier() {
+	// keep reading applyCh while PutAppend() and Get() handlers submit commands to the Raft log using Start()
+	for {
+		applymsg := <-kv.applyCh
+		kv.mu.Lock()
+		if applymsg.UseSnapshot {
+			//fmt.Println("use snapshot")
+			r := bytes.NewBuffer(applymsg.Snapshot)
+			d := labgob.NewDecoder(r)
+			var lastIncludedIndex, lastIncludedTerm int
+			//d.Decode(&lastIncludedIndex)
+			//d.Decode(&lastIncludedTerm)
+			//d.Decode(&kv.statemachine)
+			//d.Decode(&kv.lastopack)
+
+			if d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil || d.Decode(&kv.statemachine) != nil || d.Decode(&kv.lastopack) != nil {
+				//fmt.Println("applier decode snapshot error")
+				panic("applier decode snapshot error")
+			}
+		} else {
+			//do not use snapshot
+			op := applymsg.Command.(Op)
+			res := Res{
+				ClientId:    op.ClientId,
+				Err:         OK,
+				CommandId:   op.CommandId,
+				OK:          true,
+				WrongLeader: false,
+			}
+
+			switch op.Command {
+			case CommandGet:
+				kv.ApplyGet(op, &res)
+			case CommandPut:
+				kv.ApplyPut(op, &res)
+			case CommandAppend:
+				kv.ApplyAppend(op, &res)
+			case CommandUpdateConfig:
+				kv.ApplyUpdateConfig(op, &res)
+			case CommandGC:
+				kv.ApplyGC(op, &res)
+			}
+
+			if ch, ok := kv.resultCh[applymsg.CommandIndex]; ok {
+				select {
+				case <-ch: // drain bad data
+				default:
+				}
+			} else {
+				kv.resultCh[applymsg.CommandIndex] = make(chan Res, 1)
+			}
+			kv.resultCh[applymsg.CommandIndex] <- res
+
+			//the Raft state size is approaching maxraftsize, it should save a snapshot,
+			//and tell the Raft library that it has snapshotted, so that Raft can discard old log entries.
+			if kv.maxraftstate != -1 && kv.rf.GetRaftStateSize() > kv.maxraftstate {
+				//fmt.Println("reach maxraftstate")
+				w := new(bytes.Buffer)
+				e := labgob.NewEncoder(w)
+				e.Encode(kv.statemachine)
+				e.Encode(kv.lastopack)
+				snapshot := w.Bytes()
+				go kv.rf.CreateSnapshot(applymsg.CommandIndex, snapshot)
+			}
+		}
+
+		kv.mu.Unlock()
+	}
+}
+
+func (kv *ShardKV) UpdateConfig() {
+
 }
 
 //
@@ -115,12 +299,23 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.masters = masters
 
 	// Your initialization code here.
-
 	// Use something like this to talk to the shardmaster:
 	// kv.mck = shardmaster.MakeClerk(kv.masters)
 
-	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.applyCh = make(chan raft.ApplyMsg, 100)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+
+	kv.lastopack = make(map[int64]int64)
+	kv.resultCh = make(map[int]chan Res)
+	kv.mck = shardmaster.MakeClerk(kv.masters)
+	for i := 0; i < shardmaster.NShards; i++ {
+		kv.statemachine[i] = KVmemory{
+			Store: make(map[string]string),
+		}
+	}
+
+	go kv.Applier()
+	go kv.UpdateConfig()
 
 	return kv
 }
