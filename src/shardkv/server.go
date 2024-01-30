@@ -35,7 +35,8 @@ type Op struct {
 	Key   string
 	Value string
 	//update config
-
+	Config shardmaster.Config
+	Data   [shardmaster.NShards]KVmemory
 	//clean up shards
 }
 
@@ -51,17 +52,16 @@ type Res struct {
 type ShardKV struct {
 	mu           sync.Mutex
 	me           int
-	rf           *raft.Raft
+	rf           *raft.Raft //创建多个 raft 组来承载所有分片的读写任务
 	applyCh      chan raft.ApplyMsg
 	make_end     func(string) *labrpc.ClientEnd
 	gid          int
 	masters      []*labrpc.ClientEnd
-	maxraftstate int // snapshot if log grows this big
-
+	maxraftstate int                           // snapshot if log grows this big
 	statemachine [shardmaster.NShards]KVmemory //存储
 	resultCh     map[int]chan Res              // logindex对应位置的结果
 	lastopack    map[int64]int64               // 记录一个 client 已经处理过的最大 requestId
-	config       shardmaster.Config            //配置
+	config       shardmaster.Config            //配置,定期和Shardmaster交互，保证更新到最新配置(monitor)
 	mck          *shardmaster.Clerk            //clerk
 }
 
@@ -273,6 +273,48 @@ func (kv *ShardKV) Applier() {
 	}
 }
 
+//use nextconfig and lastconfig to get the shard to transfer
+func (kv *ShardKV) GetShardsToTransfer(nextconfig shardmaster.Config) map[int][]int {
+	shardToTransfer := make(map[int][]int)
+	for i := 0; i < shardmaster.NShards; i++ {
+		lastgid, newgid := kv.config.Shards[i], nextconfig.Shards[i]
+		if lastgid != newgid {
+			if _, ok := shardToTransfer[newgid]; !ok {
+				shardToTransfer[newgid] = make([]int, 0)
+			}
+			shardToTransfer[newgid] = append(shardToTransfer[newgid], i)
+		}
+	}
+	return shardToTransfer
+}
+
+func (kv *ShardKV) GetReConfigOp(nextconfig shardmaster.Config) (Op, bool) {
+	//update config: config-->nextconfig
+	op := Op{
+		Command: CommandUpdateConfig,
+		Config:  nextconfig,
+	}
+	for i := 0; i < shardmaster.NShards; i++ {
+		op.Data[i] = KVmemory{
+			Store: make(map[string]string),
+		}
+	}
+	//分片数据迁移
+	var wg sync.WaitGroup
+	ok := false
+	shardToTransfer := kv.GetShardsToTransfer(nextconfig)
+
+	for gid, shardids := range shardToTransfer {
+		wg.Add(1)
+		//do shard transfer
+		func() {
+			defer wg.Done()
+		}()
+	}
+	wg.Wait()
+	return op, ok
+}
+
 //have your server detect when a configuration happens and start accepting requests whose keys match shards that it now owns.
 func (kv *ShardKV) UpdateConfig() {
 	for {
@@ -280,7 +322,17 @@ func (kv *ShardKV) UpdateConfig() {
 			//I am the leader,update the config
 			// get the latestconfig
 			lastconfig := kv.mck.Query(-1)
-
+			for i := kv.config.Num + 1; i <= lastconfig.Num; i++ {
+				nextconfig := kv.mck.Query(i)
+				op, ok := kv.GetReConfigOp(nextconfig)
+				if !ok {
+					break
+				}
+				res := kv.SubmitCommand(op)
+				if res.OK == false {
+					break
+				}
+			}
 		}
 		time.Sleep(TimeoutConfigUpdate)
 	}
@@ -328,7 +380,9 @@ func (kv *ShardKV) Kill() {
 func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int, gid int, masters []*labrpc.ClientEnd, make_end func(string) *labrpc.ClientEnd) *ShardKV {
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
+	//需要根据最新配置完成配置更新，分片数据迁移，分片数据清理，空日志检测等功能
 	labgob.Register(Op{})
+	labgob.Register(Res{})
 
 	kv := new(ShardKV)
 	kv.me = me
