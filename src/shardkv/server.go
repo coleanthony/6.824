@@ -28,14 +28,15 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Command string
+	Command   string
+	CommandId int64
+	ClientId  int64
 	//get put append
 	Key   string
 	Value string
 	//update config
 
-	CommandId int64
-	ClientId  int64
+	//clean up shards
 }
 
 type Res struct {
@@ -61,7 +62,7 @@ type ShardKV struct {
 	resultCh     map[int]chan Res              // logindex对应位置的结果
 	lastopack    map[int64]int64               // 记录一个 client 已经处理过的最大 requestId
 	config       shardmaster.Config            //配置
-	mck          *shardmaster.Clerk
+	mck          *shardmaster.Clerk            //clerk
 }
 
 func (kv *ShardKV) SubmitCommand(op Op) Res {
@@ -82,9 +83,17 @@ func (kv *ShardKV) SubmitCommand(op Op) Res {
 	select {
 	case result := <-kv.resultCh[index]:
 		//fmt.Printf("client[%d] command[%d] get data\n", op.ClientId, op.CommandId)
-		if op.ClientId == result.ClientId && op.CommandId == result.CommandId {
-			return result
+		if op.Command == CommandAppend || op.Command == CommandGet || op.Command == CommandPut {
+			if op.ClientId == result.ClientId && op.CommandId == result.CommandId {
+				return result
+			}
+		} else if op.Command == CommandGC {
+
+		} else {
+			//Command update config
+
 		}
+
 		return Res{OK: false}
 	case <-time.After(TimeoutApply):
 		//fmt.Printf("client[%d] command[%d] timeout\n", op.ClientId, op.CommandId)
@@ -130,37 +139,58 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	reply.Err = res.Err
 }
 
-func (kv *ShardKV) ApplyGet(op Op, res *Res) {
+func (kv *ShardKV) IsValidKey(key string) bool {
 	//which shard it belongs to?
+	return key2shard(key) == kv.gid
+}
+
+func (kv *ShardKV) ApplyGet(op Op, res *Res) {
+	if !kv.IsValidKey(op.Key) {
+		res.Err = ErrWrongGroup
+		return
+	}
 
 	kv.lastopack[op.ClientId] = op.CommandId
-	res.Value, res.Err = kv.statemachine.Get(op.Key)
+	shardId := key2shard(op.Key)
+	res.Value, res.Err = kv.statemachine[shardId].Get(op.Key)
 }
 
 func (kv *ShardKV) ApplyPut(op Op, res *Res) {
+	if !kv.IsValidKey(op.Key) {
+		res.Err = ErrWrongGroup
+		return
+	}
+	shardId := key2shard(op.Key)
+
 	if _, ok := kv.lastopack[op.ClientId]; !ok {
-		res.Err = kv.statemachine.Put(op.Key, op.Value)
+		res.Err = kv.statemachine[shardId].Put(op.Key, op.Value)
 		kv.lastopack[op.ClientId] = op.CommandId
 	} else {
 		if kv.lastopack[op.ClientId] >= op.CommandId {
 			res.Err = OK
 		} else {
 			kv.lastopack[op.ClientId] = op.CommandId
-			res.Err = kv.statemachine.Put(op.Key, op.Value)
+			res.Err = kv.statemachine[shardId].Put(op.Key, op.Value)
 		}
 	}
 }
 
 func (kv *ShardKV) ApplyAppend(op Op, res *Res) {
+	if !kv.IsValidKey(op.Key) {
+		res.Err = ErrWrongGroup
+		return
+	}
+	shardId := key2shard(op.Key)
+
 	if _, ok := kv.lastopack[op.ClientId]; !ok {
 		kv.lastopack[op.ClientId] = op.CommandId
-		res.Err = kv.statemachine.Append(op.Key, op.Value)
+		res.Err = kv.statemachine[shardId].Append(op.Key, op.Value)
 	} else {
 		if kv.lastopack[op.ClientId] >= op.CommandId {
 			res.Err = OK
 		} else {
 			kv.lastopack[op.ClientId] = op.CommandId
-			res.Err = kv.statemachine.Append(op.Key, op.Value)
+			res.Err = kv.statemachine[shardId].Append(op.Key, op.Value)
 		}
 	}
 }
@@ -243,8 +273,17 @@ func (kv *ShardKV) Applier() {
 	}
 }
 
+//have your server detect when a configuration happens and start accepting requests whose keys match shards that it now owns.
 func (kv *ShardKV) UpdateConfig() {
+	for {
+		if _, isleader := kv.rf.GetState(); isleader {
+			//I am the leader,update the config
+			// get the latestconfig
+			lastconfig := kv.mck.Query(-1)
 
+		}
+		time.Sleep(TimeoutConfigUpdate)
+	}
 }
 
 //
