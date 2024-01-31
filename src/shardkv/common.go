@@ -1,5 +1,7 @@
 package shardkv
 
+import "lab/src/shardmaster"
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -14,6 +16,7 @@ const (
 	ErrNoKey       = "ErrNoKey"
 	ErrWrongGroup  = "ErrWrongGroup"
 	ErrWrongLeader = "ErrWrongLeader"
+	ErrNotReady    = "ErrNoyReady"
 )
 
 type Err string
@@ -47,4 +50,24 @@ type GetReply struct {
 	Err         Err
 	Value       string
 	WrongLeader bool
+}
+
+type TransferShardArgs struct {
+	ShardIds []int
+	Num      int
+}
+
+type TransferShardReply struct {
+	Err       Err
+	Data      [shardmaster.NShards]KVmemory
+	LastOpAck map[int64]int64
+}
+
+type GarbageCollectionArgs struct {
+	Num     int
+	ShardId int
+}
+
+type GarbageCollectionReply struct {
+	Err Err
 }

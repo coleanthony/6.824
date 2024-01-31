@@ -35,9 +35,12 @@ type Op struct {
 	Key   string
 	Value string
 	//update config
-	Config shardmaster.Config
-	Data   [shardmaster.NShards]KVmemory
+	Config    shardmaster.Config
+	Data      [shardmaster.NShards]KVmemory
+	LastOpAck map[int64]int64
 	//clean up shards
+	SharId int
+	NumCfg int
 }
 
 type Res struct {
@@ -47,6 +50,7 @@ type Res struct {
 	CommandId   int64
 	OK          bool
 	WrongLeader bool
+	ConfigNum   int
 }
 
 type ShardKV struct {
@@ -87,13 +91,12 @@ func (kv *ShardKV) SubmitCommand(op Op) Res {
 			if op.ClientId == result.ClientId && op.CommandId == result.CommandId {
 				return result
 			}
-		} else if op.Command == CommandGC {
-
 		} else {
-			//Command update config
-
+			//Command update config or garbage collection
+			if op.Config.Num == result.ConfigNum {
+				return result
+			}
 		}
-
 		return Res{OK: false}
 	case <-time.After(TimeoutApply):
 		//fmt.Printf("client[%d] command[%d] timeout\n", op.ClientId, op.CommandId)
@@ -195,12 +198,50 @@ func (kv *ShardKV) ApplyAppend(op Op, res *Res) {
 	}
 }
 
+//do transfer and tell the old Group to do garbage collection
 func (kv *ShardKV) ApplyUpdateConfig(op Op, res *Res) {
+	res.ConfigNum = op.Config.Num
+	if op.Config.Num == kv.config.Num+1 {
+		//copy the data
+		for shardid := 0; shardid < shardmaster.NShards; shardid++ {
+			for k, v := range op.Data[shardid].Store {
+				kv.statemachine[shardid].Store[k] = v
+			}
+		}
 
+		for k, v := range op.LastOpAck {
+			if _, ok := kv.lastopack[k]; !ok || kv.lastopack[k] < v {
+				kv.lastopack[k] = v
+			}
+		}
+
+		lastcfg := kv.config
+		kv.config = op.Config
+		//use lastconf do garbage collection
+		for shardid := 0; shardid < shardmaster.NShards; shardid++ {
+			lastshard2gid, newshard2gid := lastcfg.Shards[shardid], kv.config.Shards[shardid]
+			if lastshard2gid != newshard2gid {
+				//lastshard2gid do gc
+				gcargs := GarbageCollectionArgs{
+					ShardId: shardid,
+					Num:     lastcfg.Num,
+				}
+				go kv.sendGC(lastshard2gid, lastcfg, &gcargs, &GarbageCollectionReply{})
+			}
+		}
+	}
+	res.Err = OK
 }
 
 func (kv *ShardKV) ApplyGC(op Op, res *Res) {
-
+	if op.NumCfg > kv.config.Num {
+		return
+	}
+	if kv.gid != op.Config.Shards[op.SharId] {
+		kv.statemachine[op.SharId] = KVmemory{
+			Store: make(map[string]string),
+		}
+	}
 }
 
 func (kv *ShardKV) Applier() {
@@ -273,6 +314,55 @@ func (kv *ShardKV) Applier() {
 	}
 }
 
+// if this server is ready, copy shards required in args and ack to reply.
+func (kv *ShardKV) TransferShard(args *TransferShardArgs, reply *TransferShardReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if kv.config.Num < args.Num {
+		// this server is not ready (may still handle the requested shards).
+		reply.Err = ErrNotReady
+		return
+	}
+
+	//copy shard to reply
+	for i := 0; i < shardmaster.NShards; i++ {
+		reply.Data[i] = KVmemory{
+			make(map[string]string),
+		}
+	}
+	for _, shardid := range args.ShardIds {
+		for k, v := range kv.statemachine[shardid].Store {
+			reply.Data[shardid].Store[k] = v
+		}
+	}
+
+	//copy ack to reply
+	reply.LastOpAck = make(map[int64]int64)
+	for k, v := range kv.lastopack {
+		reply.LastOpAck[k] = v
+	}
+
+	reply.Err = OK
+}
+
+func (kv *ShardKV) sendTransferShard(gid int, args *TransferShardArgs, reply *TransferShardReply) bool {
+	if servers, ok := kv.config.Groups[gid]; ok {
+		for si := 0; si < len(servers); si++ {
+			srv := kv.make_end(servers[si])
+			cancall := srv.Call("ShardKV.TransferShard", args, reply)
+			if cancall {
+				if reply.Err == OK {
+					return true
+				}
+				if reply.Err == ErrNotReady {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
 //use nextconfig and lastconfig to get the shard to transfer
 func (kv *ShardKV) GetShardsToTransfer(nextconfig shardmaster.Config) map[int][]int {
 	shardToTransfer := make(map[int][]int)
@@ -291,8 +381,9 @@ func (kv *ShardKV) GetShardsToTransfer(nextconfig shardmaster.Config) map[int][]
 func (kv *ShardKV) GetReConfigOp(nextconfig shardmaster.Config) (Op, bool) {
 	//update config: config-->nextconfig
 	op := Op{
-		Command: CommandUpdateConfig,
-		Config:  nextconfig,
+		Command:   CommandUpdateConfig,
+		Config:    nextconfig,
+		LastOpAck: make(map[int64]int64),
 	}
 	for i := 0; i < shardmaster.NShards; i++ {
 		op.Data[i] = KVmemory{
@@ -301,18 +392,80 @@ func (kv *ShardKV) GetReConfigOp(nextconfig shardmaster.Config) (Op, bool) {
 	}
 	//分片数据迁移
 	var wg sync.WaitGroup
+	var ackmu sync.Mutex
 	ok := false
 	shardToTransfer := kv.GetShardsToTransfer(nextconfig)
 
 	for gid, shardids := range shardToTransfer {
 		wg.Add(1)
-		//do shard transfer
-		func() {
+		//eg, A ack B for shard1, get the shard data and insert them into op.Data
+		args := TransferShardArgs{
+			ShardIds: shardids,
+			Num:      nextconfig.Num,
+		}
+		go func(gid int, args TransferShardArgs, reply TransferShardReply) {
 			defer wg.Done()
-		}()
+			if kv.sendTransferShard(gid, &args, &reply) {
+				ackmu.Lock()
+				//deep copy
+				for _, sharid := range shardids {
+					for k, v := range reply.Data[sharid].Store {
+						op.Data[sharid].Store[k] = v
+					}
+				}
+				for k := range reply.LastOpAck {
+					if _, ok := op.LastOpAck[k]; !ok || op.LastOpAck[k] < reply.LastOpAck[k] {
+						op.LastOpAck[k] = reply.LastOpAck[k]
+					}
+				}
+
+				ackmu.Unlock()
+			} else {
+				ok = false
+			}
+		}(gid, args, TransferShardReply{})
 	}
 	wg.Wait()
 	return op, ok
+}
+
+//execute garbage collect
+func (kv *ShardKV) GC(args *GarbageCollectionArgs, reply *GarbageCollectionReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if kv.config.Num < args.Num {
+		// this server is not ready (may still handle the requested shards).
+		reply.Err = ErrNotReady
+		return
+	}
+
+	//get gc op
+	op := Op{
+		Command: CommandGC,
+		NumCfg:  args.Num,
+		SharId:  args.ShardId,
+	}
+	kv.SubmitCommand(op)
+
+	reply.Err = OK
+}
+
+func (kv *ShardKV) sendGC(gid int, lastcfg shardmaster.Config, args *GarbageCollectionArgs, reply *GarbageCollectionReply) bool {
+	if servers, ok := lastcfg.Groups[gid]; ok {
+		for si := 0; si < len(servers); si++ {
+			srv := kv.make_end(servers[si])
+			cancall := srv.Call("ShardKV.GC", args, reply)
+			if cancall {
+				if reply.Err == OK {
+					return true
+				}
+				if reply.Err == ErrNotReady {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 //have your server detect when a configuration happens and start accepting requests whose keys match shards that it now owns.
@@ -347,6 +500,7 @@ func (kv *ShardKV) UpdateConfig() {
 func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+	return
 }
 
 //
