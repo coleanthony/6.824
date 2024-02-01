@@ -253,7 +253,7 @@ func (kv *ShardKV) ApplyGC(op Op, res *Res) {
 	if op.NumCfg > kv.config.Num {
 		return
 	}
-	if kv.gid != op.Config.Shards[op.SharId] {
+	if kv.gid != kv.config.Shards[op.SharId] {
 		kv.statemachine[op.SharId] = KVmemory{
 			Store: make(map[string]string),
 		}
