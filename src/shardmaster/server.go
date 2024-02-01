@@ -420,9 +420,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sm.applyCh = make(chan raft.ApplyMsg, 100)
 	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
 
-	labgob.Register(Op{})
-	labgob.Register(Res{})
-
 	sm.resultCh = make(map[int]chan Res)
 	sm.lastopack = make(map[int64]int64)
 

@@ -69,5 +69,6 @@ type GarbageCollectionArgs struct {
 }
 
 type GarbageCollectionReply struct {
-	Err Err
+	Err         Err
+	WrongLeader bool
 }
