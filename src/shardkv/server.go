@@ -155,6 +155,9 @@ func (kv *ShardKV) IsValidKey(key string) bool {
 
 func (kv *ShardKV) ApplyGet(op Op, res *Res) {
 	//fmt.Println("do get exec")
+	//kv.mu.Lock()
+	//defer kv.mu.Unlock()
+
 	if !kv.IsValidKey(op.Key) {
 		res.Err = ErrWrongGroup
 		return
@@ -173,6 +176,9 @@ func (kv *ShardKV) ApplyGet(op Op, res *Res) {
 
 func (kv *ShardKV) ApplyPut(op Op, res *Res) {
 	//fmt.Println("do put exec")
+	//kv.mu.Lock()
+	//defer kv.mu.Unlock()
+
 	if !kv.IsValidKey(op.Key) {
 		res.Err = ErrWrongGroup
 		return
@@ -194,6 +200,9 @@ func (kv *ShardKV) ApplyPut(op Op, res *Res) {
 
 func (kv *ShardKV) ApplyAppend(op Op, res *Res) {
 	//fmt.Println("do append exec")
+	//kv.mu.Lock()
+	//defer kv.mu.Unlock()
+
 	if !kv.IsValidKey(op.Key) {
 		res.Err = ErrWrongGroup
 		return
@@ -216,6 +225,9 @@ func (kv *ShardKV) ApplyAppend(op Op, res *Res) {
 //do transfer and tell the old Group to do garbage collection
 func (kv *ShardKV) ApplyUpdateConfig(op Op, res *Res) {
 	//fmt.Println("do update config exec")
+	//kv.mu.Lock()
+	//defer kv.mu.Unlock()
+
 	res.ConfigNum = op.Config.Num
 	if op.Config.Num == kv.config.Num+1 {
 		//copy the data
@@ -250,6 +262,9 @@ func (kv *ShardKV) ApplyUpdateConfig(op Op, res *Res) {
 
 func (kv *ShardKV) ApplyGC(op Op, res *Res) {
 	//fmt.Println("do gc exec")
+	//kv.mu.Lock()
+	//defer kv.mu.Unlock()
+
 	if op.NumCfg > kv.config.Num {
 		return
 	}
@@ -336,6 +351,7 @@ func (kv *ShardKV) Applier() {
 func (kv *ShardKV) TransferShard(args *TransferShardArgs, reply *TransferShardReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
 	if kv.config.Num < args.Num {
 		// this server is not ready (may still handle the requested shards).
 		reply.Err = ErrNotReady
@@ -454,6 +470,7 @@ func (kv *ShardKV) GetReConfigOp(nextconfig shardmaster.Config) (Op, bool) {
 //execute garbage collect
 func (kv *ShardKV) GC(args *GarbageCollectionArgs, reply *GarbageCollectionReply) {
 	//fmt.Println("gc")
+
 	if _, isleader := kv.rf.GetState(); !isleader {
 		reply.WrongLeader = true
 		return
@@ -484,6 +501,7 @@ func (kv *ShardKV) sendGC(gid int, lastcfg shardmaster.Config, args *GarbageColl
 		for si := 0; si < len(servers); si++ {
 			srv := kv.make_end(servers[si])
 			cancall := srv.Call("ShardKV.GC", args, reply)
+			//kv.mu.Lock()
 			if cancall {
 				if reply.Err == OK {
 					return true
@@ -492,6 +510,7 @@ func (kv *ShardKV) sendGC(gid int, lastcfg shardmaster.Config, args *GarbageColl
 					return false
 				}
 			}
+			//kv.mu.Unlock()
 		}
 	}
 	return true
