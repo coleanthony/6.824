@@ -30,15 +30,15 @@ In this repository, I realized a Raft-based KV store. I realized a Paxos-based K
 | Lecture #16 | Cache Consistency: Memcached at Facebook     |     √     |
 | Lecture #17 | Causal Consistency, COPS                     |     √     |
 | Lecture #18 | Fork Consistency, Certificate Transparency   |     √     |
-| Lecture #19 | Peer-to-peer: Bitcoin                        |           |
-| Lecture #20 | Blockstack                                   |           |
+| Lecture #19 | Peer-to-peer: Bitcoin                        |     √     |
+| Lecture #20 | Blockstack                                   |     √     |
 
 ## labs
 
 - √ Lab 1: [MapReduce](records/[mit%206.824]%20lab1：MapReduce.docx)
 - √ Lab 2: [replication for fault-tolerance using Raft](records/[mit%206.824]%20lab2：Raft.docx)
 - √ Lab 3: [fault-tolerant key/value store](records/[mit%206.824]%20lab3：KVRaft.docx)
-- √ Lab 4: [sharded key/value store]()
+- √ Lab 4: [sharded key/value store](records/[mit%206.824]%20lab4：ShardKV.docx)
 
 
 ## papers
