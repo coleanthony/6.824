@@ -64,5 +64,3 @@ In this repository, I realized a Raft-based KV store. I realized a Paxos-based K
 ## Course Notes
 
 [Text Version Course](https://mit-public-courses-cn-translatio.gitbook.io/mit6-824/)
-
-[My Course Notes]
